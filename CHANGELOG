@@ -1,0 +1,123 @@
+/*
+ * $Id: CHANGELOG,v 1.19 2003/12/09 18:23:35 xvr Exp $
+ * Created: 08/21/2002
+ *
+ * You cannot step into the same river twice, for fresh waters are
+ * ever flowing in upon you.
+ *      -- Heraclitus
+ *
+ * xvr (c) 2002-2004
+ * xvr@xvr.net
+ */
+
+0.13 - 07/5/2004
+     o A *lot* of internal reorganizing.  The code was originally just
+       a POC, so it became really difficult if i wanted to do
+       something like add more encoding mechanisms.  Now it's much
+       better.
+     o First draft of reordering techniques written, but unused for
+       now as they are unstable.
+     o It turns out that add/sub aren't identical in all cases, as the
+       flags may be set differently.  Hydan now does some analysis to
+       determine wether instructions following add/sub could be
+       affected.  If so, it doesn't modify those instructions.
+       Luckily, the number of affected instructions is _extremely_
+       low, which is probably why this problem never really surfaced.
+       Bandwidth loss is thus negligible. (a 0.2% hit..)
+     o Some flags in libdisasm missing, fixed.
+
+0.12 - 11/31/2003
+     o Added some more sets of instructions thanks to a tip by
+       sandeep.  When an instruction operates on 2 registers, we can
+       have that encoded in 2 different ways by swapping the REG and RM
+       vals.  I'd done that for some instructions previously but failed
+       to extend it fully .. d'oh.  Significant improvement -- down to
+       1/110 encoding rate.
+     o Moved to the new libdisasm version which sports a spanking
+       new-as-seen-on-tv API (.20).
+     o OpenBSD moved from a.out to ELF!  Minor nit, and hydan works on
+       obsd now.
+
+0.11 - 10/01/2003
+     o Speedup patch: moved computation of sinstr table sizes to
+       compile time (patch by sandeep at codito.com)
+     o Forgot to check MOD values in the modrm byte, fixed.
+
+0.10 - 02/04/2003
+     o log() and log1p() wouldn't allow me to reliably do log2(n), so
+       i wrote my own.
+     o minor bug in libdisasm, fixed by _m.
+     o various portability fixes, works on Linux now (tested on
+       slackware, thx enz00)
+     o added xor insns, now down to 1/150
+     o improved decoding speed by extracting only what was encoded,
+       and not everything.
+     o Ported to cygwin/windows (thanks to Rezident for the PE/COFF
+       parsing code)
+     o Added length whitening for extra security
+
+0.09 - 01/15/2003
+     o Implemented a random walk algo for embedding the message. PRNG
+       is seeded with the hash of the password.
+     o Optimized said algo.  The number of valid instructions it can
+       skip maximally is set to 100.  The more, the better, but also the
+       slower.  Check hydan.h:HDN_MAX_SKIP_INSNS.
+     o Added hydan-stats: counts the number of bits that can be
+       embedded, and prints out the summary.  Summary includes the
+       number of bits for each instruction in the given executable, the
+       encoding rate, the number of functions in the file and how many
+       bits can be obtained by ordering them (a feature that is not
+       currently implemented)
+
+0.08 - 01/02/2003
+     o Forgot to add the end of struct entry in some of the sets of
+       instructions.  Fixed.
+     o Added a detailed explanation of the workings of hydan in, well,
+       README.details.
+
+0.07 - 10/30/2002
+     o Added extra instructions in no time thanks to uber cool
+       substitution system, and now down to 1/170 encoding rate.
+     o Added variable bit encoding system.  Bad name; the idea is that
+       when a substitution table doesn't have enough instructions to
+       encode 'n' bits of information, but has more than is needed to
+       encode 'n-1' bits, encode 'n' bits anyways.  On average,
+       assuming random data (which it should be since blowfish
+       encrypted), we should get better performance.
+
+0.06 - 10/29/2002
+     o Scrapped all the changes and multibit substitutions for a
+       simpler and automatic way of adding equivalent instructions.
+       Encoding rate is now down to 1/500, but code is half the size,
+       and it's trivial to add new instructions.
+
+0.05 - 09/04/2002
+     o Added the toas multibit substitution, which improves the
+       encoding rate by another 17% (1/190 encoding rate)
+
+0.04 - 09/03/2002
+     o Added the test/or substitution, which improves the encoding
+       rate by 17% (1/230 encoding rate)
+     o Blowfish encryption added (CBC mode)
+
+0.03 - 08/23/2002
+     o Mad data structures changes, to make things more flexible:
+       added the hdn_host_section linked list, and use that to store
+       all section information and data.  Which allowed both to ...
+     o Fix unbounded disassembly problem, which would occur when
+       disassembling accross section boundaries, since hydan now knows
+       about section boundaries.
+     o And embed data into every code section, not just .text.  Squeezes
+       more bits out of the host.
+     o Modified embedding functions, so as to make it easy to add more
+       instructions to the encoding mix.
+
+0.02 - 08/22/2002
+     o Fixed ELF header difference for freebsd (thx dmuz)
+     o Made Makefile more portable (bye bye $@ and $^)
+
+0.01 - 08/21/2002 - Initial release:
+     o Can encode and decode any message (ascii or otherwise).
+     o Uses add/subs to encode the data. (1/280 encoding rate)
+     o ELF 32 executables supported only.
+     o Only uses .text section to store steg data.

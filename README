@@ -1,0 +1,52 @@
+/*
+ * $Id: README,v 1.6 2004/04/28 22:28:50 xvr Exp $
+ * Created: 08/21/2002
+ *
+ * "Omit needless words."
+ *      -- Strunk and White, Elements of Style
+ *
+ * xvr (c) 2002-2004
+ * xvr@xvr.net
+ */
+
+
+Hydan [hI-dn]:
+        Old english, to hide or conceal.
+
+
+Intro:
+        Hydan steganographically conceals a message into an application.
+        Features include:
+                 - Application filesize remains unchanged
+                 - Message is blowfish encrypted with a user-supplied
+                   passphrase before being embedded
+
+
+Compile:
+        xvr@foo:~/$ tar -zxvf hydan.tar.gz
+        xvr@foo:~/$ cd hydan
+        xvr@foo:~/hydan$ make
+
+
+Embed a message:
+        ./hydan /bin/ls <msg> ls.stegged
+
+
+Decode the message:
+        ./hydan-decode ls.stegged
+
+
+Note:
+        Don't use commonly available applications like /bin/ls to
+        conceal your message!  It would be trivial for an attacker to
+        realize that there is something hidden in your copy of ls, as
+        the md5sum would differ.
+        Checkout the README.details for more info about implementation
+        and attacks.
+
+
+Thanks to:
+        mammon for libdisasm and tons of help, sandeep for helping
+        improve the encoding rate, and halvar and gera for insightful
+        comments + ideas.
+

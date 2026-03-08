@@ -1,0 +1,33 @@
+/*
+ * $Id: TODO,v 1.16 2003/12/09 18:23:36 xvr Exp $
+ * Created: 08/21/2002
+ *
+ * xvr (c) 2002-2004
+ * xvr@xvr.net
+ */
+
+Major Items:
+
+- make sure there aren't duplicate insns in the set of all insns
+- playing with direction bits -- only works on registers??
+- Keep the statistical distribution of asm instructions close to that
+  of the original host.
+- Use the pasphrase to define the insn-to-bit mapping (and use some
+  data from the application, also defined by the passphrase, to make
+  this mapping application specific as well as passphrase specific).
+- Use dead code to encode even more information.
+- Get rid of section header requirement by using non dead code as
+  valid instructions.
+- Attacker could overwrite data by running hydan against the host
+  program.  Use some form of ecc optionally.
+
+Minor Items:
+
+- can swap order of operands in instructions that don't need it -- eg test eax, ebx.  unf test doesn't seem to exist in rl where op1 != op2.  cmp however is a good one.  bt doesn't exist either in rl.
+- AF flag?
+- length of message doesn't seem to be working exactly right -- there's more shit at the end that shouldn't be there.
+- remove the maxaddr bullshit and put ALL disassembly data into the disassembly_data array -- not just the valid instructions
+- make everything use disassembly_data array
+- fix make in libdisasm -- either don't make the test stuff, or make it make right.  better yet -- make it make from within the hydan makefile once and for all..
+- Use command line arguments to specify output filename, decoding, and
+  verbose mode

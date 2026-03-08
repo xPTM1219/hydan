@@ -1,0 +1,113 @@
+/*
+ * $Id: README.details,v 1.4 2003/01/19 02:02:20 xvr Exp $
+ * Created: 12/18/02
+ *
+ * "The details of my life are quite inconsequential ... very well,
+ *  where do i begin?" -- Dr. Evil, in Austin Powers.
+ *
+ * xvr (c) 2002-2004
+ * xvr@xvr.net
+ */
+
+- How it works
+--------------
+
+Overview: Hydan finds sets of equivalent instructions in the binary,
+and uses that redundancy to embed data.  The larger the set of
+equivalent instructions, the more bits can be embedded.  For example,
+if instructions {a, b, c, d} are all equivalent, then we can embed two
+bits of information when any of those instructions are encountered.
+
+Embedding: Hydan goes through the application sequentially, and
+whenever it finds an instruction that it has equivalents to, it
+substitutes in the instruction that represents the bit(s) of data
+hydan is currently embedding.  A simple example: "add %eax, 50" is
+equivalent to "sub %eax, -50".  So this set is {"add %reg, $imm", "sub
+%reg, $imm"}.  Whenever an instruction of the form "add %reg, $imm" is
+encountered, hydan can embed one bit of the message.  If the bit is 0,
+it leaves it as an add instruction.  Else it substitutes it to "sub
+%reg, -$imm".  (and vice versa)
+
+Decoding: When it is time to extract the embedded message, every
+"add %reg, $imm" is taken to mean bit 0, and every sub instruction
+encodes the bit 1, and the embedded message is reconstructed that way.
+
+Encryption: Hydan first prompts the user for a passphrase before
+embedding or decoding the contents of the application.  In the case of
+embedding, hydan prepends the length of the message to the message,
+encrypts that with blowfish in cbc mode, and embeds the result into
+the application.  When decoding, hydan extracts all the possible bits
+from the application (since it does not know how long the message is
+a-priori; that information is encrypted).  Hydan then decrypts the
+message properly since it is in CBC mode and need not know the total
+length first.  The lenght is then used to truncate the message to
+size.
+
+Instructions: For a complete list of the sets of equivalent
+instructions, please refer to hdn_insns.c.
+
+
+- Attacks
+---------
+
+There are three classes of attacks that are applicable to hydan:
+overwriting, detection, and extraction.  The overwriting attack refers
+to the ability to overwrite the message embedded in the application,
+whether its presence was detected or not.  An attacker should also not
+be able to detect the presence of a message in the application, nor
+decrypt it.
+
+The overwriting attack: hydan currently has no means to protect
+against this type of attack.  Since hydan embeds the message
+sequentially, starting from the top of the application, an attacker
+could re-run hydan with a bogus text and embed that on top of the
+original message.  The intended recipient of the application would
+thus be unable to retrieve the original message.  One way this could
+be solved is to add an error correcting code to the encoding of the
+message, and distribute the message throughout the application in a
+passphrase specific manner.  This way only parts of the original
+message would be overwritten, and the original may still be
+reconstructed.  Of course, there is nothing that can be done if the
+attacker insists on overwriting with a message size that is the
+maximum embeddable in the given application.  However, the computation
+required to overwrite each application on a large scale might be
+prohibitive enough to discourage this as a routine behaviour, at an
+ISP for example.
+
+Detection: Binaries produced by hydan should not exhibit obvious
+patterns.  At the most superficial level, this is accomplished by not
+embedding any marker or other easily recognizable token.  At best, the
+embedded data looks random (which is why it is bf encrypted).  At the
+assembly level however, the current version of hydan makes no attempt
+at mimicing the original distribution of instructions in the
+application, and is thus vulnerable to statistical analysis.  Indeed,
+although all the instructions are equivalent, some may appear more
+frequently than others "in the wild," and this distribution must be
+respected.  Global statistical distribution is not the only thing that
+must be respected; ultimately local statistical distributions are as
+important.  For example, procedure prologs and epilogs are usually
+written with one set of instructions only, such as adding when
+creating space on the stack.  Modifying any of those instructions, or
+making them inconsistent across procedures, will be suspicious.
+
+Decryption: the data embedded in the application should be hard to
+retreive, even when assuming the attacker knows that there is
+something embedded in the application.  This is accomplished in hydan
+by using blowfish with a user-specified passphrase, and by encrypting
+absolutely all embedded information -- such as message length -- to avoid
+information leaks that may aid the attacker.
+
+
+- Future plans
+--------------
+
+- Make hydan more resilient to attacks described above
+- Find more sets of equivalent instructions
+- Forego the sequential embedding, and instead randomize the embedding
+  sequence using the passphrase as a seed
+- Detect dead code, and use to embed even more data (since dead code
+  can be completely re-written without affecting program execution)
+- Tie instruction-to-bit mapping to the passphrase, so "add %eax,
+  $imm" does not always represent bit 0
+- Replace length fields with two fields (length of length, and length)
+  to avoid attacks on stream cipher.

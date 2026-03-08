@@ -1,0 +1,1035 @@
+================================================================================
+B A S T A R D                                            disassembly environment
+
+
+                        Intermediate Code Format
+
+
+
+================================================================================
+ Contents
+
+ 1. Introduction
+ 2. INT_CODE Object Definition
+ 3. Virtual Registers
+ 4. Operand Types
+ 5. Instruction Format
+ 6. Standard (Processor) Instructions
+ 7. Non-standard Instructions (Directives)
+ 8. Supported Traps
+ 9. Implementation: Intel to INT_CODE
+
+
+
+================================================================================
+ Introduction
+
+
+	dream on. here's the lowdown:
+		* no address expressions are allowed
+		* no arch-specific registers may be used
+		* no explicit addressing
+		* no prefetch or branch delay instructions
+		* register-memory architecture
+		* SPARC-based instruction set
+
+
+
+
+================================================================================
+ INT_CODE Object Definition
+
+
+This is how each line of intermediate code will be represented internally:
+
+
+	struct INT_CODE {
+		unsigned long id;
+			/* the actual instruction */
+		unsigned long opcode;
+		unsigned long src, dest, aux;
+			/* operand types */
+		unsigned long sType, dType, aType;
+			/* housekeeping stuff */
+		unsigned long fn_id;		/* function owning this */
+		unsigned long addr_id;		/* addr in original asm */ 
+		unsigned int order;		/* order after addr_id */
+		unsigned long cmt_id;		/* associated comment */
+	};
+
+
+
+================================================================================
+ Virtual Registers
+
+
+The following groups of registers will be used in INT_CODE representation:
+
+	General Purpose
+		g0, g1, g2, .... gFF
+	
+	Incoming Arguments
+		i0, i1, i2, ... iFF
+	
+	Outgoing Arguments [parameters to called procedures]
+		o0, o1, o2, ... oFF
+
+	Local Variables
+		l0, l1, l2, ... lFF
+
+	Stack Pointer
+		sp
+
+	Frame Pointer
+		fp
+
+	Program Counter
+		pc
+
+	Condition Codes
+		cz					/* zero flag */
+		cn					/* negative flag */
+		cv					/* overflow flag */
+		cc					/* carry flag */
+
+	Physical Registers
+		r0, r1, r2, ... rMAX
+
+
+
+
+================================================================================
+ Operand Types
+
+
+The operand types are of the following format:
+
+	00 00 00 00
+	^^---------- global flags			{ deref }
+	   ^^------- operand basic type		{ reg, imm, label }
+	      ^^---- operand specific type		{ per-basetype-specific }
+	         ^-- operand size			{ byte, long, qword }
+	          ^- operand access			{ r, w, x }
+
+...this can probably be whittled  down to a short if need be.
+
+An operand may be a 'virtual register', an immediate value, or a reference to
+a label created with the .label directive [i.e., a NAME or CODE object from
+the main bastard disassembly]. Operands may be dereferenced, in which case
+their size attribute represents the size of the item pointed to, since the
+operand itself will always contain data of size DEFAULT_MACHINE_ADDR_SIZE.
+
+Note that an operand may never be an absolute address, a relative address, or
+an address expression; absolute addresses should be referenced by labels, and
+address expressions [absolute or relative] should be calculated in a register
+prior to referencing the address.
+
+In the AT&T syntax, most operands are prefixed by special characters denoting
+their nature; this tradition will be followed when representing INT_CODE 
+objects.
+
+ 	Character prefixes for operand types:
+		immediate value signed/unsigned	'$'
+		label                          	None
+		label.local-label              	None
+		register                       	'%'
+		dereference any of the above   	'[]' or '*'
+		comment					'#'
+	
+
+	/* basic op types */
+	enum basic_op_types 	{
+		g_reg,		/* general register */
+		i_reg,		/* incoming register */
+		o_reg,		/* outgoing register */
+		l_reg,		/* local register */
+		spec_reg,		/* special register */
+		r_reg,		/* "real" register */
+		imm_val,		/* immediate value */
+		label			/* address label */
+	};
+
+
+	/* specific op types */
+	enum special_regs   	{
+		sp_reg,		/* stack pointer */
+		fp_reg,		/* frame pointer */
+		pc_reg,		/* program counter */
+		cz_reg,		/* Zero Condition */
+		cn_reg,		/* Negative (Sign) Condition */
+		cv_reg,		/* Overflow Condition */
+		cc_reg		/* Carry Condition */
+	};
+
+	enum immediate_ops	{
+		imm_byte,
+		imm_ubyte,
+		imm_hword,
+		imm_uhword,
+		imm_word,
+		imm_uword
+	};
+
+	enum label_ops		{
+		label_name,
+		label_code,
+		label_func,
+		label_struct 	/* and so on and so on... */
+	};
+
+	#define DEREF_OP        0x10 00 00 00
+
+
+
+
+================================================================================
+ Instruction Format
+
+
+Since this will never be a compilable architecture, there is no need for a very
+efficient instruction set. Each instruction is 4 bytes, and the operands are 
+encoded the INT_CODE structure ... they are not present in the instruction
+at all.
+
+The reason for providing an 'opcode' is to represent the instruction set as 
+a collection of unrelated instructions that tend to have many modifiers [ i.e.
+condition codes, signed/unsigned, etc]; the mnemonic is generated from an
+instruction, and the instruction itself provides information about the 'type'
+of instruction.
+
+Here is the basic opcode format, in 4 bytes:
+
+		0x00 00 00 00
+		            ^----- dest size
+		           ^------ src size
+		         ^-------- cond code
+		        ^--------- trap or branch type [unused]
+	  	     ^^----------- instruction
+  		  ^^-------------- instruction type [FPU, basic, special]
+	
+
+
+
+================================================================================
+  Standard (Processor) Instructions
+
+
+Fields
+	Syntax : This is in the format
+	              mnemonic [operand-type operand-name[, ...]]
+	         ...where the operand types are any combination of
+	              r 	-- register operand
+	              m	-- memory operand [i.e., code or address label]
+	              i  -- immediate operand
+	         Note that the first operand is always 'src', 'dest' is always
+	         the last operand; in 2-operand instructions, the second operand
+	         is either 'arg' or 'dest' depending on context, i.e. whether or 
+	         not the argument is written.
+					  
+	Outputs : The direct effects of the instruction. Usually, the operand
+	          named 'dest' [always the last operand] is overwritten.
+				 
+	Flags Affected : Side effects of the instruction. 
+	
+	Basic Form : The basic opcode format. This is in the form of 4 hexadecimal
+	             bytes, with the second byte replaced by the appropriate
+	             mnemonic, and is of the format
+	                 instr-type mnemonic conditon-code op-sizes
+	             For most instructions, the standard format
+	                 00 mnemonic 00 00
+	             will apply, possibly with operand size specifiers replacing
+	             the last byte. 
+	             
+		Operand sizes are:
+			enum op_size { 	none, 
+				byte, ubyte, 	/* 1, 2 *//* 00001b == signed */
+				hword, uhword,	/* 3, 4 */
+				word, uword, 	/* 5, 6 */
+				dword, udword,	/* 7, 8 */
+				qword, uqword,	/* 9, A */
+				ext_prec	/* B */ /* extended precision */
+			};
+
+		Condition codes are:
+			char *branch_type[] { 	
+				"n",	"a",	/*  NEVER, ALWAYS  */
+				"e",	"ne",	/*  EQUAL, NOT EQUAL */
+				"g",	"le",	/*  GREATER, LESSER/EQUAL */
+				"l",	"ge",	/*  LESSER, GREATER/EQUAL */
+				"neg",	"pos",	/*  NEGATIVE, POSITIVE */
+				"cs",	"cc",	/*  CARRY, NO CARRY */
+				"vs",	"vc"	/*  OVERFLOW, NO OVERFLOW */
+			};
+
+	Variants: Instructions with condition codes or operand-size specifications
+	          will have a number of variant forms depending on the condition
+	          code byte or the operand size byte. These variants are listed
+	          with the full mnemonic and the corresponding condition code and
+	          operand size bytes.
+	          
+
+
+add		Integer Addition 
+	Adds 'src' and 'arg' operands
+	Syntax:
+		add 	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		??
+		%cc	Result overflowed (unsigned)
+		%cv	Result overflowed (signed)
+		%cn	Result is a negative number
+	Basic Form:
+		00 add 00 SD
+	Variants:
+		00 add  00 55 		; integer add
+		00 addx 00 BB		; extended precision add 						
+
+
+and		Bitwise AND
+	Bitwise AND of 'src' with 'arg'
+	Syntax:
+		and	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 and 00 SD
+	Variants:
+		00 andb 00 22
+		00 andh 00 44
+		00 andw 00 66
+		00 andd 00 88
+
+
+bcc		Branch on Condition
+	Branch to new instruction address
+	Syntax:
+		b{cc}	r/m src
+	Outputs:
+		None.
+	Flags Affected:
+		None.
+	Basic Form:
+		00 b 0C 00					
+	Variants:
+		00 bn   00 00					
+		00 ba   01 00					
+		00 be   02 00					
+		00 bne  03 00					
+		00 bg   04 00					
+		00 ble  05 00					
+		00 bl   06 00					
+		00 bge  07 00					
+		00 bneg 08 00					
+		00 bpos 09 00					
+		00 bcs  0A 00					
+		00 bcc  0B 00					
+		00 bvs  0C 00					
+		00 bvc  0D 00					
+	
+
+bclr		Bit Clear
+	Clears bit number 'arg' in register or memory 'src'
+	Syntax:
+		bclr	r/m src, r/m/i arg
+	Outputs:
+		src is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00	bclr	00 S0
+	Variants:
+		00	bclrb	00 20
+		00	bclrh	00 40
+		00	bclrw	00 60
+		00	bclrd	00 80
+
+
+bset		Bit Set
+	Sets bit number 'arg' in register or memory 'src'
+	Syntax:
+		bset	r/m src, r/m/i arg
+	Outputs:
+		src is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00	bset	00 S0
+	Variants:
+		00	bsetb	00 20
+		00	bsetw	00 40
+		00	bseth	00 60
+		00	bsetd	00 80
+
+
+btog		Bit Toggle
+	Toggles bit number 'arg' in register or memory 'src'
+	Syntax:
+		btog	r/m src, r/m/i arg
+	Outputs:
+		src is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00	btog	00 S0
+	Variants:
+		00	btogb	00 20
+		00	btogh	00 40
+		00	btogw	00 60
+		00	btogd	00 80
+
+
+btst		Bit Test
+	Sets zero flag to value of bit number 'arg' in register or memory 'src'
+	Syntax:
+		btst	r/m src, r/m/i arg
+	Outputs:
+		None.
+	Flags Affected:
+		None.
+	Basic Form:
+		00	btst	00 S0
+	Variants:
+		00	btstb	00 20
+		00	btsth	00 40
+		00	btstw	00 60
+		00	btstd	00 80
+
+
+call		Call Procedure
+	Call a procedure or subroutine
+	Syntax:
+		call	r/m src
+	Outputs:
+		None.
+	Flags Affected:
+		None.
+	Basic Form:
+		00 call 00 00
+	Variants:
+		None.
+	
+
+clr		Clear Register or Memory
+	Sets 'src' to zero
+	Syntax:
+		clr	r/m src
+	Outputs:
+		src is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00	clr	00 S0
+	Variants:
+		00	clrb	00 20	
+		00	clrh	00 40	
+		00	clrw	00 60	
+		00	clrd	00 80	
+
+
+cmp		Compare two values
+	Subtract 'arg' from 'src' and discard the results
+	Syntax:
+		cmp	r/m src, r/m/i arg
+	Outputs:
+		None.
+	Flags Affected:
+		??
+	Basic Form:
+		00 cmp	00 SD
+	Variants:
+		00 cmpb	00 22
+		00 cmph	00 44
+		00 cmpw	00 66
+		00 cmpd	00 88
+
+
+dec		Decrement
+	Subtract 1 from 'src'
+	Syntax:
+		dec	r/m src
+	Outputs:
+		src is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 dec 00 S0
+	Variants:
+		00 decb 00 20
+		00 dech 00 40
+		00 decw 00 60
+		00 decd 00 80
+
+
+div		Divide
+	Divide 'src' by 'arg'
+	Syntax:
+		div	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 div 00 SD
+	Variants:
+		00 div  00 55
+		00 divx 00 BB
+	
+
+inc		Increment
+	Add 1 to 'src'
+	Syntax:
+		inc	r/m src
+	Outputs:
+		src is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 inc 00 S0
+	Variants:
+		00 incb 00 20
+		00 inch 00 40
+		00 incw 00 60
+		00 incd 00 80
+
+
+jmp		Jump
+	Unconditional branch: same as branch always 
+	Syntax:
+		jmp	r/m src
+	Outputs:
+		None.
+	Flags Affected:
+		None.
+	Basic Form:
+		00 jmp 00 00
+	Variants:
+		None.
+
+
+ld 		Load
+	Load memory 'src' to register 'dest'
+	Syntax:
+		ld		m src, r dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 ld 00 SD
+	Variants:
+		00 ldb 00 22
+		00 ldh 00 44
+		00 ldw 00 66
+		00 ldd 00 88
+	
+
+mod		Modulus
+	Set 'dest' to 'src' modulo 'arg'
+	Syntax:
+		mod	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 mod 00 SD
+	Variants:
+		00 mod  00 55		; integer mod
+
+
+mul 		Multiply 
+	Multiply 'src' by 'arg'
+	Syntax:
+		mul	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 mul 00 SD
+	Variants:
+		00 mul  00 55		; integer mul
+		00 mulx 00 BB		; extended-precision mul
+
+
+mv			Move
+	Move register/imm 'src' to register 'dest'
+	Syntax:
+		mv		r/i src, r dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 mov 00 SD
+	Variants:
+		00 movb 00 22
+		00 movh 00 44
+		00 movw 00 66
+		00 movd 00 88
+
+
+neg		Neg
+	Two's complement of 'src'
+	Syntax:
+		neg	r/m/i src, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 neg 00 S0
+	Variants:
+		00 negb 00 20
+		00 negh 00 40
+		00 negw 00 60
+		00 negd 00 80
+
+
+not		Not
+	One's complement of 'src'
+	Syntax:
+		not	r/m/i src, r/m dest 
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 not 00 S0
+	Variants:
+		00 notb 00 20
+		00 noth 00 40
+		00 notw 00 60
+		00 notd 00 80
+
+
+or			Bitwise OR
+	Bitwise OR of 'src' with 'arg'
+	Syntax:
+		or		r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 or 00 SD
+	Variants:
+		00 orb 00 22
+		00 orh 00 44
+		00 orw 00 66
+		00 ord 00 88
+
+
+restore	Restore Context
+	Restore register context
+	Syntax:
+		restore
+	Outputs:
+		None, though all registers are overwritten.
+	Flags Affected:
+		None.
+	Basic Form:
+		00 restore 00 00
+	Variants:
+		None
+
+
+ret		Return
+	Return from procedure or subroutine
+	Syntax:
+		ret
+	Outputs:
+		None.
+	Flags Affected:
+		None.
+	Basic Form:
+		00 ret 00 00 
+	Variants:
+		None
+
+
+rol		Rotate Left
+	Rotate 'src' left by 'arg' bits
+	Syntax:
+		rol	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 rol 00 SD
+	Variants:
+		00 rolb 00 22
+		00 rolh 00 44
+		00 rolw 00 66
+		00 rold 00 88
+
+
+ror		Rotate Right
+	Rotate 'src' right by 'arg' bits
+	Syntax:
+		ror	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 ror 00 SD
+	Variants:
+		00 rorb 00 22
+		00 rorh 00 44
+		00 rorw 00 66
+		00 rord 00 88
+
+
+save		Context save
+	Save current register context
+	Syntax:
+		save
+	Outputs:
+		None.
+	Flags Affected:
+		None.
+	Basic Form:
+		00 save 00 00
+	Variants:
+		None
+
+
+set		Set Bits
+	Set all bits in 'src' register or memory location
+	Syntax:
+		set	r/m  src
+	Outputs:
+		src is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 set 00 S0
+	Variants:
+		00 setb 00 20
+		00 seth 00 40
+		00 setw 00 60
+		00 setd 00 80
+
+
+sll		Shift Left Logical
+	Shift 'src' left by 'arg' bits, zero extending
+	Syntax:
+		sll	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 sll 00 SD
+	Variants:
+		00 sllb 00 22
+		00 sllh 00 44
+		00 sllw 00 66
+		00 slld 00 88
+
+
+sra		Shift Right Arithmetic
+	Shift 'src' right by 'arg' bits, sign extending.
+	Syntax:
+		sra	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 sra 00 SD
+	Variants:
+		00 srab 00 22
+		00 srah 00 44
+		00 sraw 00 66
+		00 srad 00 88
+
+	
+srl		Shift Right Logical
+	Shift 'src' right by 'arg' bits, zero extending. 
+	Syntax:
+		srl	r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 srl 00 SD
+	Variants:
+		00 srlb 00 22
+		00 srlh 00 44
+		00 srlw 00 66
+		00 srld 00 88
+
+
+st			Store
+	Store register 'src' to memory 'dest'
+	Syntax:
+		st		r src, m dest 
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 st 00 SD
+	Variants:
+		00 stb 00 22
+		00 sth 00 44
+		00 stw 00 66
+		00 std 00 88
+
+
+sub		Subtract
+	Subtract 'arg' from 'src'
+	Syntax:
+		sub	r/m/i src, r/m/i arg, r/m/i dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 sub 00 SD
+	Variants:
+		00 sub  00 55		; integer subtraction
+		00 subx 00 BB		; extended-precision subtraction
+	
+
+swap		Swap		
+	Swap contents of register and reg/memory
+	Syntax:
+		swap	r/m src, r/m dest
+	Outputs:
+		src and dest are overwritten
+	Flags Affected:
+		None.
+	Basic Form:
+		00 swap 00 SD
+	Variants:
+		00 swapb 00 22
+		00 swaph 00 44
+		00 swapw 00 66
+		00 swapd 00 88
+	
+
+tcc		Trap on Condition
+	Generate machine trap number 'src'
+	Syntax:
+		t 		i src
+	Outputs:
+		None.
+	Basic Form:
+		00 t TC 00
+	Variants:
+		00 tn   00 00					
+		00 ta   01 00					
+		00 te   02 00					
+		00 tne  03 00					
+		00 tg   04 00					
+		00 tle  05 00					
+		00 tl   06 00					
+		00 tge  07 00					
+		00 tneg 08 00					
+		00 tpos 09 00					
+		00 tcs  0A 00					
+		00 tcc  0B 00					
+		00 tvs  0C 00					
+		00 tvc  0D 00					
+	
+	
+tret		Trap Return
+	Return from trap handler.
+	Syntax:
+		tret
+	Outputs:
+		None.
+	Flags Affected:
+		None.
+	Basic Form:
+		00 tret 00 00
+	Variants:
+		None.
+
+
+tst		Test
+	Test 'src' for a non-zero value
+	Syntax:
+		tst	r/m src
+	Outputs:
+		None.
+	Flags Affected:
+		??
+	Basic Form:
+		00 test 00 S0
+	Variants:
+		00 testb 00 20
+		00 testh 00 40
+		00 testw 00 60
+		00 testd 00 80
+
+
+xor 		Exclusive OR
+	Bitwise XOR of 'src' with 'arg'
+	Syntax:
+		xor r/m/i src, r/m/i arg, r/m dest
+	Outputs:
+		dest is overwritten
+	Flags Affected:
+		??
+	Basic Form:
+		00 xor 00 SD 
+	Variants:
+		00 xorb 00 22
+		00 xorh 00 44
+		00 xorw 00 66
+		00 xord 00 88
+
+
+
+
+================================================================================
+  Non-standard Instructions (Directives)
+
+
+.label
+	Generate a symbolic code address for the current location
+	Syntax:
+		.label		id of CODE object
+	Basic Form:
+		01 .label 00 00
+	Notes: 
+
+.data
+	Generate a symbolic data address for the current location
+	Syntax:
+		.data			id of FUNC_LOCAL object
+	Basic Form:
+		01 .data 00 00
+	Notes: 
+
+.global
+	Generate a global symbolic data address for the current location
+	Syntax:
+		.global		id of NAME object
+	Basic Form:
+		01 .global 00 00 
+	Notes: 
+
+
+.frame
+	Enter stack frame
+	Syntax:
+		.frame
+	Basic Form:
+		01 .frame 00 00
+	Notes: 
+
+
+.unframe
+	Exit stack frame
+	Syntax:
+		.unframe
+	Basic Form:
+		01 .unframe 00 00
+	Notes: 
+
+
+.proc
+	Generate a global symbolic code address for the current location
+	Syntax:
+		.proc			id of FUNCTION object
+	Basic Form:
+		01 .proc 00 00
+	Notes: 
+
+.asm
+	Unknown assembler instruction -- verbatim from user
+	Syntax:
+		.asm			id of CODE object 
+	Basic Form:
+		01 .asm 00 00
+	Notes: 
+
+.block
+	Open code block
+	Syntax:
+		.block		id of INT_CODE object 
+	Basic Form:
+		01 .block 00 00
+	Notes: 
+		The INT_CODE object is the condition which "owns" or applies to the
+		block. A block may have a NULL INT_CODE object, meaning it is an
+		arbitrary block -- always executed.
+
+.unblock 
+	Close code block
+	Syntax:
+		.unblock		id of INT_CODE object
+	Basic Form:
+		01 .unblock 00 00
+	Notes:
+		The INT_CODE object is the .block statement that opened this block.
+
+.clobber
+	Overwrite register contents
+	Syntax:
+		.clobber		register
+	Basic Form:
+		01 .clobber 00 00
+	Notes:
+		Informs decompiler that 'register' has been cleared of its original
+		contents. This is not used when the register is modified [ e.g.
+		add %r1, %r2, %r2 ] but only when the new contents are not based
+		on the old contents [ e.g. mov %r1, %r2 ]. This is intended to 
+		make managing 'dead' registers easier.
+
+.calc
+	Dynamic Calculation of Address
+	Syntax:
+		.calc
+	Basic Form:
+		01 .calc 00 00
+	Notes:
+		Informs the decompiler that the following instructions are a
+		dynamic address calculation [e.g., an effective or SIB address
+		in Intel syntax]. This is merely a 'hint' for treating these
+		instructions correctly, and has no bearing on the code itself.
+
+.uncalc
+	End Dynamic Calculation of Address
+	Syntax:
+		.uncalc
+	Basic Form:
+		01 .uncalc 00 00
+	Notes:
+		Marks the end of a dynamic address calculation.
+
+
+
+
+================================================================================
+ Supported Traps
+
+
+	Basically, every INT in Intel as well as the IN and OUT instructions will
+be implemented as a trap; these are OS specific, and so must be handled in the
+EXT_OS module . Still, there may be a need to have some 'magic numbers' to 
+identify trap types in the intermediate code.
+
+We'll see.
+
+
+
+================================================================================
+ Implementation: Intel to INT_CODE
+
+
+Please reference
+	src/arch/i386/i386_intcode.c
+	src/arch/i386/i386_intcode.h
+	src/arch/i386/i386_intcode.table
