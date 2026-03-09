@@ -1,7 +1,7 @@
 LIB	= libdisasm
 
 INCLUDE = -I.
-CFLAGS 	= $(INCLUDE)  -O3 -ggdb
+CFLAGS 	= $(INCLUDE) -O3 -ggdb -m32
 LFLAGS 	= $(CFLAGS) -fPIC -shared -Wl,-soname,$(LIB).so
 RM	= rm -f
 CC	= gcc

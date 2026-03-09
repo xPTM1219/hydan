@@ -85,7 +85,7 @@ void _decode_message (hdn_sections_header_t *sh,
                 tmp = malloc (8 + sizeof (tmp->sz) + sizeof (hdn_data_t));
                 tmp->sz = 8 + sizeof (tmp->sz);
                 memcpy (&tmp->content, mesg_data->content, 8 + sizeof (tmp->sz));
-                hdn_crypto_decrypt (&tmp, key);
+                //hdn_crypto_decrypt (&tmp, key);
                 is_sz_extracted = 1;
                 mesg_data->sz = tmp->sz + sizeof (tmp->sz);
             }
@@ -149,7 +149,7 @@ int hdn_decode_main (int argc, char **argv)
     /*
      * decrypt it
      */
-    hdn_crypto_decrypt (&mesg_data, password);
+    //hdn_crypto_decrypt (&mesg_data, password);
 
     bzero (password, _PASSWORD_LEN);
 

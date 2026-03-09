@@ -145,7 +145,7 @@ int hdn_embed_main (int argc, char **argv)
      */
     password = getpass ("Password: ");
     hdn_crypto_srandom (password);
-    hdn_crypto_encrypt (&mesg_data, password);
+    //hdn_crypto_encrypt (&mesg_data, password);
 
     /*
      * read in application data

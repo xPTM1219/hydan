@@ -11,7 +11,7 @@
 /*
  * checks wether a section is code or not
  */
-inline char hdn_exe_section_is_code (hdn_sections_t *hs)
+char hdn_exe_section_is_code (hdn_sections_t *hs)
 {
 #if (defined(__CYGWIN32__) || defined(_Windows) || defined(_WIN32))
 
@@ -79,11 +79,11 @@ static int _is_valid_exe (uint8_t *bin)
     }
 
     /* make sure this is indeed an executable */
-    if (ehdr->e_type != ET_EXEC)
-    {
-        HDN_WARN ("Host file is not an executable");
-        return 0;
-    }
+    //if (ehdr->e_type != ET_EXEC)
+    //{
+    //    HDN_WARN ("Host file is not an executable");
+    //    return 0;
+    //}
 
     if (!ehdr->e_phoff)
     {

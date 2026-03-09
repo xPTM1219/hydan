@@ -12,12 +12,14 @@ VERSION		= 0.13
 ###
 
 CC 		= gcc
-LIBDIS_LOC	= libdisasm/src/arch/i386/libdisasm
+ARCH = -m32
+LIBDIS_LOC	= libdisasm-32bit/src/arch/i386/libdisasm
+#LIBDIS_LOC	= libdisasm-64bit/libdisasm
 DEBUG		= -g #-D_DEBUG
 MISC		= -DVARBITS
 INCLUDE		= -I$(LIBDIS_LOC)
-CFLAGS		= -Wall $(INCLUDE) $(DEBUG) $(MISC) #-static
-LDFLAGS		= -L$(LIBDIS_LOC) -ldisasm -lcrypto -lm
+CFLAGS		= -Wall $(INCLUDE) $(DEBUG) $(MISC) $(ARCH) #-static
+LDFLAGS		= -L$(LIBDIS_LOC) -ldisasm -lcrypto -lm #-lelf $(ARCH)
 
 ###
 

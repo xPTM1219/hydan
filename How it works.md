@@ -1,16 +1,19 @@
-/*
- * $Id: README.details,v 1.4 2003/01/19 02:02:20 xvr Exp $
- * Created: 12/18/02
- *
- * "The details of my life are quite inconsequential ... very well,
- *  where do i begin?" -- Dr. Evil, in Austin Powers.
- *
- * xvr (c) 2002-2004
- * xvr@xvr.net
- */
 
-- How it works
---------------
+# README.details
+
+## Info
+
+v 1.4 2003/01/19 02:02:20 xvr Exp $
+Created: 12/18/02
+
+"The details of my life are quite inconsequential ... very well,
+where do i begin?" -- Dr. Evil, in Austin Powers.
+
+xvr (c) 2002-2004
+xvr@xvr.net
+
+
+## How it works
 
 Overview: Hydan finds sets of equivalent instructions in the binary,
 and uses that redundancy to embed data.  The larger the set of
@@ -47,8 +50,7 @@ Instructions: For a complete list of the sets of equivalent
 instructions, please refer to hdn_insns.c.
 
 
-- Attacks
----------
+## Attacks
 
 There are three classes of attacks that are applicable to hydan:
 overwriting, detection, and extraction.  The overwriting attack refers
@@ -98,8 +100,7 @@ absolutely all embedded information -- such as message length -- to avoid
 information leaks that may aid the attacker.
 
 
-- Future plans
---------------
+## Future plans
 
 - Make hydan more resilient to attacks described above
 - Find more sets of equivalent instructions
@@ -111,3 +112,4 @@ information leaks that may aid the attacker.
   $imm" does not always represent bit 0
 - Replace length fields with two fields (length of length, and length)
   to avoid attacks on stream cipher.
+

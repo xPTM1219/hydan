@@ -1,18 +1,18 @@
-/*
- * $Id: TODO,v 1.16 2003/12/09 18:23:36 xvr Exp $
- * Created: 08/21/2002
- *
- * xvr (c) 2002-2004
- * xvr@xvr.net
- */
+# TODO
 
-Major Items:
+$Id: TODO,v 1.16 2003/12/09 18:23:36 xvr Exp $
+Created: 08/21/2002
+
+xvr (c) 2002-2004
+xvr@xvr.net
+
+## Major Items
 
 - make sure there aren't duplicate insns in the set of all insns
 - playing with direction bits -- only works on registers??
 - Keep the statistical distribution of asm instructions close to that
   of the original host.
-- Use the pasphrase to define the insn-to-bit mapping (and use some
+- Use the passphrase to define the insn-to-bit mapping (and use some
   data from the application, also defined by the passphrase, to make
   this mapping application specific as well as passphrase specific).
 - Use dead code to encode even more information.
@@ -21,7 +21,7 @@ Major Items:
 - Attacker could overwrite data by running hydan against the host
   program.  Use some form of ecc optionally.
 
-Minor Items:
+## Minor Items
 
 - can swap order of operands in instructions that don't need it -- eg test eax, ebx.  unf test doesn't seem to exist in rl where op1 != op2.  cmp however is a good one.  bt doesn't exist either in rl.
 - AF flag?

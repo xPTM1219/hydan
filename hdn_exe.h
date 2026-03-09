@@ -19,6 +19,6 @@ hdn_sections_header_t *hdn_exe_get_sections (uint8_t *file_start);
 /*
  * is a section code or not?
  */
-inline char hdn_exe_section_is_code (hdn_sections_t *hs);
+char hdn_exe_section_is_code (hdn_sections_t *hs);
 
 #endif//!HDN_EXE_H_
