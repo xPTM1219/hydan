@@ -145,15 +145,13 @@ int hdn_embed_main (int argc, char **argv)
      */
     password = getpass ("Password: ");
     hdn_crypto_srandom (password);
-    //hdn_crypto_encrypt (&mesg_data, password);
+    hdn_crypto_encrypt (&mesg_data, password);
 
     /*
      * read in application data
      */
     if (!(host_data = hdn_io_fileread (argv[1])))
         goto out;
-
-    x86_init(opt_none, NULL);
 
     /*
      * extract application's sections
@@ -180,7 +178,8 @@ int hdn_embed_main (int argc, char **argv)
     }
 
     /*
-     * make sure stego is possible
+     * Make sure stego is possible
+     * Note: Possibly make it 4 to increase the payload storage?
      */
     if (mesg_data->sz * 8  >  num_bits)
     {
@@ -244,7 +243,7 @@ int hdn_embed_main (int argc, char **argv)
     }
     if (sh) free (sh);
 
-    x86_cleanup ();
+
     return 0;
 }
 

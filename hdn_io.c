@@ -7,7 +7,10 @@
  */
 
 #include "hdn_io.h"
+#include <Zydis/Zydis.h>
 
+
+static ZydisFormatter formatter;
 
 static void _sprintf_type (enum x86_op_type type, char *line, uint32_t sz)
 {
@@ -18,9 +21,6 @@ static void _sprintf_type (enum x86_op_type type, char *line, uint32_t sz)
         case op_register:   ret = "reg"; break;
         case op_immediate:  ret = "imm"; break;
         case op_relative:   ret = "rel"; break;
-        case op_absolute:   ret = "abs"; break;
-        case op_expression: ret = "exp"; break;
-        case op_offset:     ret = "oft"; break;
         default:            ret = "n-a"; break;
     }
 
@@ -29,20 +29,26 @@ static void _sprintf_type (enum x86_op_type type, char *line, uint32_t sz)
 
 void hdn_io_print_insn (FILE *stream, x86_insn_t *insn)
 {
+    static int formatter_init = 0;
     char line[256];
     uint32_t i;
+
+    if (!formatter_init) {
+        ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
+        formatter_init = 1;
+    }
 
     /*
      * print out raw code
      */
     for (i = 0; i < (insn->size ? insn->size : 1); i++)
-        fprintf (stream, "%02X ", insn->bytes[i]);
+        fprintf (stream, "%02X ", insn->raw[i]);
 
     /*
      * formatted insn
      */
-    x86_format_insn(insn, line, sizeof line, intel_syntax);
-    fprintf(stream, "\t%s", line);
+    // ZydisFormatterFormatInstruction(&formatter, &insn->zydis, &insn->zydis.operands[0], insn->zydis.operand_count, line, sizeof(line), 0, NULL);
+    fprintf(stream, "\tunknown");
 
     /*
      * extra stuff

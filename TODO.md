@@ -6,6 +6,12 @@ Created: 08/21/2002
 xvr (c) 2002-2004
 xvr@xvr.net
 
+## AI fix
+
+* Add or change to 64bit support
+* Removing libdisasm requires to rewrite ASM code and change instructions to 64
+* Add more documentation
+
 ## Major Items
 
 - make sure there aren't duplicate insns in the set of all insns

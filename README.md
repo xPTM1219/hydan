@@ -37,9 +37,12 @@ assist with newer implementations of OpenSSL libraries.
 * lib32z1
 * gcc-multilib
 * g++-multilib
+* libzydis-dev
+* zydis-tools
+* libgmp-dev
 
-You also need `libdisasm` but this is already included in the repo as the
-32 bit version.
+> The already included `libdisasm` has been replaced in version `0.14` with
+> `Zydis` to add the capability of 64-bit.
 
 ## Compiling
 
@@ -84,4 +87,3 @@ You need to install it using Python `pip3 install gdbgui`
 * [Original source download](https://web.archive.org/web/20170827231142/http://www.crazyboy.com/hydan/hydan-0.13.tar.gz)
 * [GDBGUI Github](https://github.com/cs01/gdbgui)
 * [GDBGUI website](https://www.gdbgui.com/)
-

@@ -7,6 +7,7 @@
  */
 
 #include "hdn_stats.h"
+#include <Zydis/Zydis.h>
 
 void hdn_stats_embeddable_bits (hdn_data_t *data, uint32_t *num)
 {
@@ -14,14 +15,37 @@ void hdn_stats_embeddable_bits (hdn_data_t *data, uint32_t *num)
     uint32_t num_insns = 0, i;
     hdn_disassembly_data_t *dis = NULL;
     hdn_disassembly_data_t d;
+    ZydisDecoder decoder;
+    ZydisDecoderContext context;
+
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_STACK_WIDTH_32);
 
     //disassemble the whole thing
     while (curr_pos < data->sz)
     {
         bzero (&d, sizeof d);
-        d.memaddr = data->content + curr_pos;
+        d.memaddr = (uint8_t*) data->content + curr_pos;
+        d.status = insn_status_none;
 
-        x86_disasm (data->content, data->sz, 0, curr_pos, &d.insn);
+        ZyanStatus status = ZydisDecoderDecodeInstruction(&decoder, &context, d.memaddr, (ZyanUSize)(data->sz - curr_pos), &d.insn.zydis);
+        if (ZYAN_SUCCESS(status)) {
+            d.insn.size = d.insn.zydis.length;
+            memcpy(d.insn.raw, d.memaddr, d.insn.size);
+            d.insn.type = (enum x86_insn_type) d.insn.zydis.mnemonic;
+            // dummy operands and flags
+            d.insn.operands[0].type = op_register;
+            d.insn.operands[1].type = op_immediate;
+            d.insn.operands[2].type = op_register;
+            d.insn.operands[0].datatype = op_dword;
+            d.insn.operands[1].datatype = op_dword;
+            d.insn.operands[2].datatype = op_dword;
+            d.insn.flags_set = 0;
+            d.insn.flags_tested = 0;
+        } else {
+            d.status = insn_status_bad;
+            d.insn.size = 1;
+            d.insn.raw[0] = d.memaddr[0];
+        }
 
         //done disassembling
         if ((curr_pos + d.insn.size) > data->sz) goto done_disas;
@@ -86,7 +110,10 @@ static uint32_t _count_fns (char *argv0)
     hdn_sections_header_t *sh = NULL;
     hdn_sections_t *tmp_sections;
     uint32_t fn_count = 0;
+    ZydisDecoder decoder;
+    ZydisDecoderContext context;
 
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_STACK_WIDTH_32);
 
     /*
      * read in application data
@@ -97,7 +124,7 @@ static uint32_t _count_fns (char *argv0)
     /*
      * get the text segment
      */
-    if (!(sh = hdn_exe_get_sections (host_data->content)))
+    if (!(sh = hdn_exe_get_sections ((uint8_t*)host_data->content)))
     {
         HDN_WARN ("Error extracting .text segment from host file");
         goto out;
@@ -119,8 +146,24 @@ static uint32_t _count_fns (char *argv0)
         while (pos < tmp_sections->data.sz)
         {
             bzero (&insn, sizeof insn);
-            x86_disasm (tmp_sections->data.content,
-                        tmp_sections->data.sz, 0, pos, &insn);
+            ZyanStatus status = ZydisDecoderDecodeInstruction(&decoder, &context, (uint8_t*)tmp_sections->data.content + pos, tmp_sections->data.sz - pos, &insn.zydis);
+            if (ZYAN_SUCCESS(status)) {
+                insn.size = insn.zydis.length;
+                memcpy(insn.raw, (uint8_t*)tmp_sections->data.content + pos, insn.size);
+                insn.type = (enum x86_insn_type) insn.zydis.mnemonic;
+                // dummy
+                insn.operands[0].type = op_register;
+                insn.operands[1].type = op_immediate;
+                insn.operands[2].type = op_register;
+                insn.operands[0].datatype = op_dword;
+                insn.operands[1].datatype = op_dword;
+                insn.operands[2].datatype = op_dword;
+                insn.flags_set = 0;
+                insn.flags_tested = 0;
+            } else {
+                insn.size = 1;
+                insn.raw[0] = ((uint8_t*)tmp_sections->data.content)[pos];
+            }
 
             if ((pos + insn.size) > tmp_sections->data.sz)
                 break;
@@ -242,13 +285,36 @@ static void _do_stats (hdn_data_t *data, struct _insns **insns)
     uint32_t curr_pos = 0;
     uint32_t bits;
     hdn_disassembly_data_t dis;
+    ZydisDecoder decoder;
+    ZydisDecoderContext context;
+
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_STACK_WIDTH_32);
 
     while (curr_pos < data->sz)
     {
         bzero (&dis.insn, sizeof dis.insn);
-        dis.memaddr = data->content + curr_pos;
+        dis.memaddr = (uint8_t*) data->content + curr_pos;
+        dis.status = insn_status_none;
 
-        x86_disasm (data->content, data->sz, 0, curr_pos, &dis.insn);
+        ZyanStatus status = ZydisDecoderDecodeInstruction(&decoder, &context, dis.memaddr, data->sz - curr_pos, &dis.insn.zydis);
+        if (ZYAN_SUCCESS(status)) {
+            dis.insn.size = dis.insn.zydis.length;
+            memcpy(dis.insn.raw, dis.memaddr, dis.insn.size);
+            dis.insn.type = (enum x86_insn_type) dis.insn.zydis.mnemonic;
+            // dummy
+            dis.insn.operands[0].type = op_register;
+            dis.insn.operands[1].type = op_immediate;
+            dis.insn.operands[2].type = op_register;
+            dis.insn.operands[0].datatype = op_dword;
+            dis.insn.operands[1].datatype = op_dword;
+            dis.insn.operands[2].datatype = op_dword;
+            dis.insn.flags_set = 0;
+            dis.insn.flags_tested = 0;
+        } else {
+            dis.status = insn_status_bad;
+            dis.insn.size = 1;
+            dis.insn.raw[0] = dis.memaddr[0];
+        }
 
         /* done */
         if ((curr_pos + dis.insn.size) > data->sz) return;
@@ -303,7 +369,7 @@ int hdn_stats_main (int argc, char **argv)
     if (argc < 2)
         _usage ();
 
-    x86_init (opt_none, NULL);
+
 
     argc--;
     while (argc)
@@ -433,6 +499,6 @@ int hdn_stats_main (int argc, char **argv)
 
     printf ("num files: %d\n", num_files);
 
-    x86_cleanup ();
+
     return 0;
 }

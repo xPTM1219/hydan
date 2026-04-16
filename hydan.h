@@ -31,8 +31,90 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <Zydis/Zydis.h>
 
-#include "libdis.h"
+// Define types for compatibility with Zydis
+
+enum x86_op_type {
+    op_register = ZYDIS_OPERAND_TYPE_REGISTER,
+    op_immediate = ZYDIS_OPERAND_TYPE_IMMEDIATE,
+    op_relative = ZYDIS_OPERAND_TYPE_MEMORY,
+    op_absolute = ZYDIS_OPERAND_TYPE_MEMORY,
+    op_expression = ZYDIS_OPERAND_TYPE_MEMORY,
+    op_offset = ZYDIS_OPERAND_TYPE_MEMORY,
+};
+
+enum x86_op_datatype {
+    op_byte = 1,
+    op_word = 2,
+    op_dword = 4,
+    op_qword = 8,
+    op_dqword = 16,
+    op_sreal = 4,
+    op_dreal = 8,
+    op_extreal = 10,
+    op_bcd = 10,
+    op_simd = 16,
+    op_fpuenv = 28,
+};
+
+typedef struct {
+    enum x86_op_type type;
+    enum x86_op_datatype datatype;
+    union {
+        int8_t sbyte;
+        int16_t sword;
+        int32_t sdword;
+        int64_t sqword;
+        float sreal;
+        double dreal;
+    } data;
+} x86_op_t;
+
+enum x86_flag_status {
+    insn_carry_set = 1 << 0,
+    insn_zero_set = 1 << 1,
+    insn_oflow_set = 1 << 2,
+    insn_dir_set = 1 << 3,
+    insn_sign_set = 1 << 4,
+    insn_parity_set = 1 << 5,
+};
+
+enum x86_insn_type {
+    insn_return = ZYDIS_MNEMONIC_RET,
+    insn_leave = ZYDIS_MNEMONIC_LEAVE,
+    insn_pushflags = ZYDIS_MNEMONIC_PUSHF,
+    insn_popflags = ZYDIS_MNEMONIC_POPF,
+    insn_jmp = ZYDIS_MNEMONIC_JMP,
+    insn_jcc = ZYDIS_MNEMONIC_JB, // approximate for conditional jumps
+    insn_call = ZYDIS_MNEMONIC_CALL,
+    insn_callcc = ZYDIS_MNEMONIC_CALL, // approximate
+    insn_clear_carry = ZYDIS_MNEMONIC_CLC,
+    insn_set_carry = ZYDIS_MNEMONIC_STC,
+    insn_clear_zero = 0, // not direct
+    insn_set_zero = 0,
+    insn_clear_oflow = 0,
+    insn_set_oflow = 0,
+    insn_clear_dir = ZYDIS_MNEMONIC_CLD,
+    insn_set_dir = ZYDIS_MNEMONIC_STD,
+    insn_clear_sign = 0,
+    insn_set_sign = 0,
+    insn_clear_parity = 0,
+    insn_set_parity = 0
+};
+
+#define op_src 1
+#define op_dest 0
+
+typedef struct {
+    ZydisDecodedInstruction zydis;
+    uint32_t size;
+    uint8_t raw[ZYDIS_MAX_INSTRUCTION_LENGTH];
+    enum x86_insn_type type;
+    enum x86_flag_status flags_set;
+    enum x86_flag_status flags_tested;
+    x86_op_t operands[3];
+} x86_insn_t;
 
 /*
  * number of instructions to skip max in random walk.  The more, the

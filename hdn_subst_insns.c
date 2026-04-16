@@ -430,13 +430,6 @@ static uint32_t _src_sz (x86_insn_t *insn)
         case op_dword:   return 4;
         case op_qword:   return 8;
         case op_dqword:  return 16;
-
-        case op_sreal:   return 4;  /* 4 byte real (single) */
-        case op_dreal:   return 8;  /* 8 byte real (double) */
-
-        case op_extreal: return 10; /* 10 byte real (extended real) */
-        case op_bcd:     return 10; /* 10 byte binary-coded decimal */
-        case op_simd:    return 16; /* 16 byte packed (SIMD, MMX) */
         case op_fpuenv:  return 28; /* 28 byte FPU environment data */
     }
 
@@ -454,8 +447,6 @@ static uint64_t _get_imm_val (x86_insn_t *insn, uint8_t *host)
         case op_word:  return insn->operands[op_src].data.sword;
         case op_dword: return insn->operands[op_src].data.sdword;
         case op_qword: return insn->operands[op_src].data.sqword;
-        case op_sreal: return insn->operands[op_src].data.sreal;
-        case op_dreal: return insn->operands[op_src].data.dreal;
 
         default:
             fprintf (stderr, "Error retrieving immediate value! Guessing it..\n");

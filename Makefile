@@ -12,18 +12,14 @@ VERSION		= 0.14-dev
 ###
 
 CC 		= gcc
-ARCH = -m32
-LIBDIS_LOC	= libdisasm-32bit/src/arch/i386/libdisasm
-#LIBDIS_LOC	= libdisasm-64bit/libdisasm
 DEBUG		= -g #-D_DEBUG
 MISC		= -DVARBITS
-INCLUDE		= -I$(LIBDIS_LOC)
-CFLAGS		= -Wall $(INCLUDE) $(DEBUG) $(MISC) $(ARCH) #-static
-LDFLAGS		= -L$(LIBDIS_LOC) -ldisasm -lcrypto -lm #-lelf $(ARCH)
+CFLAGS		= -Wall $(DEBUG) $(MISC)
+LDFLAGS		= -lssl -lcrypto -lm -lZydis -lgmp
 
 ###
 
-all:   libdis $(PROG) lns
+all:   $(PROG) lns
 dist:  $(PROG) lns strip
 
 ###
@@ -37,9 +33,6 @@ OBJS		= hdn_common.o hdn_embed.o\
 
 ###
 
-libdis:
-	cd $(LIBDIS_LOC) && make libdisasm
-
 $(PROG): $(OBJS)
 	$(CC) $(CFLAGS) -o $(PROG) $(OBJS) $(LDFLAGS)
 
@@ -52,4 +45,3 @@ strip:
 
 clean:
 	rm -f $(OBJS) *~ *.core \#* $(PROG) $(PROG)-decode $(PROG)-stats
-	cd $(LIBDIS_LOC) && make clean
