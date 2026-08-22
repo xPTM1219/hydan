@@ -57,4 +57,4 @@ dkms.conf
 # User files
 dist/
 libdisasm-64bit/
-
+.kilo/

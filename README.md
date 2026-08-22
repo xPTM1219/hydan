@@ -87,3 +87,4 @@ You need to install it using Python `pip3 install gdbgui`
 * [Original source download](https://web.archive.org/web/20170827231142/http://www.crazyboy.com/hydan/hydan-0.13.tar.gz)
 * [GDBGUI Github](https://github.com/cs01/gdbgui)
 * [GDBGUI website](https://www.gdbgui.com/)
+* [Hydan alternate steg86 in Rust](https://github.com/woodruffw/steg86)
