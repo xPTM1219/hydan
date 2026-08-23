@@ -4,8 +4,19 @@
  *
  * xvr (c) 2002-2004
  * xvr@xvr.net
+ *
+ * Instruction substitution stego engine.  Groups of functionally
+ * equivalent x86 instructions form "sets"; an instruction belonging
+ * to a set of N members can carry floor(log2(N)) message bits by
+ * which member it is encoded as.  The same tables drive both sides:
+ *
+ *   embed : hdn_subst_insns()        patch host bytes to encode bits
+ *   decode: hdn_subst_insns_val()    read back which member is present
+ *
+ * Encoder and decoder must walk instructions in exactly the same
+ * order and agree on validity -- see hdn_disassemble_all() and
+ * hdn_subst_insns_tag_valid().
  */
-
 
 #ifndef _HDN_INSNS_H_
 #define _HSN_INSNS_H_

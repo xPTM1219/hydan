@@ -1,12 +1,7 @@
-/*
- * $Id: hdn_embed.c,v 1.21 2004/04/30 05:27:15 xvr Exp $
- * Created: 08/21/2002
- *
- * xvr (c) 2002-2004
- * xvr@xvr.net
- */
-
 #include "hdn_embed.h"
+#include <arpa/inet.h>
+
+#define HDN_LEN_PREFIX_BYTES 4
 
 static void _usage (void)
 {
@@ -35,14 +30,8 @@ static uint32_t _embed (hdn_sections_header_t *sh,
 
     if (!sh) return 0;
 
-    /*
-     * disassemble all the code sections first
-     */
     code = hdn_disassemble_all (sh->sections, &num_elts);
 
-    /*
-     * do some initialization
-     */
 #if 0
     hdn_reord_insns_tag_valid (code, num_elts);
 #endif
@@ -52,27 +41,13 @@ static uint32_t _embed (hdn_sections_header_t *sh,
     hdn_reord_insns_mark_jumped_to (sh, code, num_elts);
 #endif
 
-    /*
-     * don't forget to do some random walking XXX
-     */
-
-
-    /*
-     * while we have space and still have data to embed
-     */
     for (i = 0; (i < num_elts) && (mesg_curr_pos < mesg_sz); i++)
     {
         uint32_t num_bits1, num_bits2 = 0;
 
-        /*
-         * can we embed something into this instruction?
-         */
         if (code[i].status != insn_status_valid)
             continue;
 
-        /*
-         * Only use method that gives us the most bits.
-         */
         num_bits1 = hdn_subst_insns_is_possible (code, num_elts, i);
 
 #if 0
@@ -85,10 +60,6 @@ static uint32_t _embed (hdn_sections_header_t *sh,
 
         if (num_bits1 > num_bits2)
         {
-            /*
-             * embed a bit (or more) into this instruction, and return
-             * the number of bits embedded.
-             */
             mesg_curr_bit +=
                 hdn_subst_insns (&code[i].insn, code[i].memaddr,
                                  mesg_data->content + mesg_curr_pos,
@@ -104,17 +75,10 @@ static uint32_t _embed (hdn_sections_header_t *sh,
 #endif
         }
 
-        /*
-         * increment mesg position and wrap byte counter around if
-         * necessary.
-         */
-        if (mesg_curr_bit >= 8) mesg_curr_pos += mesg_curr_bit/8;
+        if (mesg_curr_bit >= 8) mesg_curr_pos += mesg_curr_bit / 8;
         mesg_curr_bit %= 8;
     }
 
-    /*
-     * cleanup
-     */
     if (code) free (code);
 
     return mesg_curr_pos;
@@ -128,41 +92,45 @@ int hdn_embed_main (int argc, char **argv)
     hdn_sections_header_t *sh = NULL;
     hdn_sections_t *tmp_sections = NULL;
 
-    /*
-     * for stats
-     */
     uint32_t num_bits = 0;
 
-    /*
-     * get message data
-     */
     if      (argc == 2) mesg_data = hdn_io_fdread (STDIN_FILENO);
     else if (argc == 3) mesg_data = hdn_io_fileread (argv[2]);
     else                _usage ();
 
-    /*
-     * get password and encrypt message data
-     */
-    password = getpass ("Password: ");
+    password = getenv ("HYDAN_TEST_PASS");
+    if (!password)
+        password = getpass ("Password: ");
     hdn_crypto_srandom (password);
     hdn_crypto_encrypt (&mesg_data, password);
 
     /*
-     * read in application data
+     * prepend 4-byte big-endian length prefix (ciphertext size)
      */
+    {
+        uint32_t ct_len = mesg_data->sz;
+        uint32_t total_len = HDN_LEN_PREFIX_BYTES + ct_len;
+        uint32_t be_len = htonl (ct_len);
+        hdn_data_t *new_mesg = realloc (mesg_data,
+                                         sizeof (hdn_data_t) + total_len);
+        if (!new_mesg)
+        {
+            fprintf (stderr, "Out of memory\n");
+            goto out;
+        }
+        mesg_data = new_mesg;
+        memmove (mesg_data->content + HDN_LEN_PREFIX_BYTES,
+                 mesg_data->content, ct_len);
+        memcpy (mesg_data->content, &be_len, HDN_LEN_PREFIX_BYTES);
+        mesg_data->sz = total_len;
+    }
+
     if (!(host_data = hdn_io_fileread (argv[1])))
         goto out;
 
-    /*
-     * extract application's sections
-     */
     if (!(sh = hdn_exe_get_sections (host_data->content)))
         goto out;
 
-    /*
-     * count the number of embeddable instructions in all of the code
-     * sections
-     */
     tmp_sections = sh->sections;
     while (tmp_sections)
     {
@@ -177,30 +145,20 @@ int hdn_embed_main (int argc, char **argv)
         tmp_sections = tmp_sections->next;
     }
 
-    /*
-     * Make sure stego is possible
-     * Note: Possibly make it 4 to increase the payload storage?
-     */
-    if (mesg_data->sz * 8  >  num_bits)
+    if (mesg_data->sz * 8 > num_bits)
     {
         fprintf (stderr,
                  "Not enough place in host application to hide message.\n"
                  "Can only hide %u bytes in this application "
                  "(needed: %u bytes).\n"
                  "So choose a different host, or make your message smaller!\n",
-                 (unsigned int)num_bits/8,
-                 (unsigned int)mesg_data->sz);
+                 (unsigned int) num_bits / 8,
+                 (unsigned int) mesg_data->sz);
         goto out;
     }
 
-    /*
-     * actually go thru and embed the message into the host proggie
-     */
     bytes_embedded = _embed (sh, mesg_data, password);
 
-    /*
-     * patch modified code sections
-     */
     tmp_sections = sh->sections;
     while (tmp_sections)
     {
@@ -211,9 +169,6 @@ int hdn_embed_main (int argc, char **argv)
         tmp_sections = tmp_sections->next;
     }
 
-    /*
-     * save new app
-     */
     hdn_io_fdwrite (STDOUT_FILENO, host_data);
 
     fprintf (stderr,
@@ -221,14 +176,11 @@ int hdn_embed_main (int argc, char **argv)
              " a total possible %u bytes.\n"
              "Encoding rate: 1/%d\n",
              bytes_embedded,
-             (unsigned int)mesg_data->sz,
-             (unsigned int)num_bits/8,
-             code_sz / (num_bits ? num_bits/8 : INT_MAX)
+             (unsigned int) mesg_data->sz,
+             (unsigned int) num_bits / 8,
+             code_sz / (num_bits ? num_bits / 8 : INT_MAX)
              );
 
-    /*
-     * cleanup
-     */
   out:
     bzero (password, _PASSWORD_LEN);
     if (host_data) free (host_data);
@@ -243,7 +195,5 @@ int hdn_embed_main (int argc, char **argv)
     }
     if (sh) free (sh);
 
-
     return 0;
 }
-

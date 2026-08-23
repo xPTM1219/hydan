@@ -2,11 +2,16 @@
  * $Id: hdn_crypto.c,v 1.8 2004/04/28 22:27:34 xvr Exp $
  * Created: 09/03/2002
  *
- * Updated to use new encrypt/decrypt functions with PBKDF2 key derivation
- * and AES-256-GCM encryption.
- *
  * xvr (c) 2002-2004
  * xvr@xvr.net
+ *
+ * AES-256-GCM + PBKDF2-HMAC-SHA256 (100k iterations) message crypto.
+ *
+ * The low-level helpers pack/unpack the fixed-layout binary blob
+ * documented in hdn_crypto.h; the high-level hdn_crypto_encrypt/
+ * decrypt operate on whole hdn_data_t buffers, sizing everything from
+ * data->sz (binary safe -- never strlen) with dynamically allocated
+ * scratch.  Inputs above HDN_CRYPTO_MAX_INPUT are rejected.
  */
 
 #include "hdn_crypto.h"
@@ -14,424 +19,290 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 
-//#ifdef _DEBUG //XXX bug here..
-//#define HASH_ALGO   EVP_md_null()
-//#define CRYPTO_ALGO EVP_enc_null()
-//#else
-#define HASH_ALGO   EVP_sha256()
-#define CRYPTO_ALGO EVP_aes_256_gcm()  //encrypt/decrypt
-#define ITERATIONS 100000
-#define KEY_LENGTH_BYTES 32  // 256 bits
-#define GCM_TAG_LENGTH 16    // 128 bits
-#define SALT_LENGTH 16
-#define IV_LENGTH 12
-//#endif
+#define HASH_ALGO    EVP_sha256()
+#define CRYPTO_ALGO  EVP_aes_256_gcm()
+#define PBKDF2_ITER  100000
 
-/**
- * Encodes binary data to Base64 string.
- *
- * @param input      Input binary data.
- * @param input_len  Length of input data.
- * @param output     Output buffer for Base64 string.
- * @return Length of Base64 output.
+/*
+ * encrypt ptlen bytes into a freshly packed binary blob:
+ * [salt|iv|tag|ct].  *outlen is in/out: capacity on entry, exact blob
+ * size on success.
  */
-static int base64_encode(const unsigned char *input, int input_len, char *output) {
-    BIO *bio, *b64;
-    BUF_MEM *buffer_ptr;
-    int output_len;
+static int hdn_encrypt_raw(const uint8_t *pt, size_t ptlen,
+                           const char *password,
+                           uint8_t *out, size_t *outlen)
+{
+    uint8_t salt[HDN_CRYPTO_SALT_LEN];
+    uint8_t iv[HDN_CRYPTO_IV_LEN];
+    uint8_t key[HDN_CRYPTO_KEY_LEN];
+    uint8_t tag[HDN_CRYPTO_TAG_LEN];
+    uint8_t *ct = NULL;
+    int ct_len = 0, final_len = 0;
+    EVP_CIPHER_CTX *ctx = NULL;
+    int rc = -1;
 
-    b64 = BIO_new(BIO_f_base64());
-    bio = BIO_new(BIO_s_mem());
-    bio = BIO_push(b64, bio);
+    if (ptlen > HDN_CRYPTO_MAX_INPUT)
+        return -1;
 
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-    BIO_write(bio, input, input_len);
-    BIO_flush(bio);
-    BIO_get_mem_ptr(bio, &buffer_ptr);
+    if (!RAND_bytes(salt, HDN_CRYPTO_SALT_LEN) ||
+        !RAND_bytes(iv, HDN_CRYPTO_IV_LEN))
+        return -1;
 
-    output_len = buffer_ptr->length;
-    memcpy(output, buffer_ptr->data, output_len);
-    output[output_len] = '\0';
+    if (!PKCS5_PBKDF2_HMAC(password, strlen(password),
+                            salt, HDN_CRYPTO_SALT_LEN,
+                            PBKDF2_ITER, EVP_sha256(),
+                            HDN_CRYPTO_KEY_LEN, key))
+        return -1;
 
-    BIO_free_all(bio);
-    return output_len;
-}
+    ct = malloc(ptlen + EVP_MAX_BLOCK_LENGTH);
+    if (!ct)
+        return -1;
 
-/**
- * Decodes Base64 string to binary data.
- *
- * @param input      Input Base64 string.
- * @param input_len  Length of input string.
- * @param output     Output buffer for binary data.
- * @return Length of decoded output.
- */
-static int base64_decode(const char *input, int input_len, unsigned char *output) {
-    BIO *bio, *b64;
-    int output_len;
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+        goto done;
 
-    bio = BIO_new_mem_buf(input, input_len);
-    b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
+    if (!EVP_EncryptInit_ex(ctx, CRYPTO_ALGO, NULL, key, iv))
+        goto done;
 
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-    output_len = BIO_read(bio, output, input_len);
+    if (!EVP_EncryptUpdate(ctx, ct, &ct_len, pt, (int)ptlen))
+        goto done;
 
-    BIO_free_all(bio);
-    return output_len;
-}
+    if (!EVP_EncryptFinal_ex(ctx, ct + ct_len, &final_len))
+        goto done;
+    ct_len += final_len;
 
-/**
- * Seeds the random number generator using a cryptographically secure method
- */
-void hdn_crypto_srandom(char *pass) {
-    uint64_t seed = 0;
-    uint8_t *digest = NULL;
-    size_t hash_length = 0;
+    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, HDN_CRYPTO_TAG_LEN, tag))
+        goto done;
 
-    // Get hash length from the hash function (more robust than hardcoding)
-    hash_length = 8; //hdn_crypto_hash_length();
-
-    if (pass && (digest = hdn_crypto_hash(pass))) {
-        // Use first 8 bytes of hash as seed, with proper endianness handling
-        if (hash_length >= sizeof(seed)) {
-            // Convert to host byte order for srandom()
-            seed = 0;
-            for (int i = 0; i < sizeof(seed); i++) {
-                seed = (seed << 8) | digest[i];
-            }
-        } else {
-            // If hash is shorter than seed size, pad with zeros
-            memcpy(&seed, digest, hash_length);
-        }
-    } else {
-        // Fallback to a more secure default seed if pass is invalid
-        // Using current time and process ID for better entropy
-        seed = (uint64_t)time(NULL) ^ (uint64_t)getpid();
-        HDN_WARN("Invalid password provided. Using system-derived seed instead.");
+    /* layout: [salt(16)][iv(12)][tag(16)][ciphertext] */    if (*outlen < HDN_CRYPTO_OVERHEAD + (size_t)ct_len) {
+        rc = -1;
+        goto done;
     }
 
-    // Use arc4random() if available (more secure than srandom())
-    #ifdef HAVE_ARC4RANDOM
-        arc4random_seed(seed);
-    #else
-        srandom(seed);
-    #endif
+    memcpy(out, salt, HDN_CRYPTO_SALT_LEN);
+    memcpy(out + HDN_CRYPTO_SALT_LEN, iv, HDN_CRYPTO_IV_LEN);
+    memcpy(out + HDN_CRYPTO_SALT_LEN + HDN_CRYPTO_IV_LEN, tag, HDN_CRYPTO_TAG_LEN);
+    memcpy(out + HDN_CRYPTO_OVERHEAD, ct, ct_len);
+    *outlen = HDN_CRYPTO_OVERHEAD + (size_t)ct_len;
+
+    rc = 0;
+
+done:
+    EVP_CIPHER_CTX_free(ctx);
+    free(ct);
+    return rc;
 }
 
-/**
- * Skips up to 'max' instructions with better randomness and thread safety
+/*
+ * decrypt the fixed-layout blob (see hdn_crypto.h).  The GCM tag is
+ * set on the context before DecryptFinal, so any wrong password or
+ * byte corruption fails authentication and returns -1.  *outlen is
+ * in/out: capacity on entry, plaintext size on success.
  */
-int hdn_crypto_skip_insn(uint32_t max) {
-    static uint32_t left = 0;
-    static pthread_mutex_t skip_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int hdn_decrypt_raw(const uint8_t *blob, size_t bloblen,
+                           const char *password,
+                           uint8_t *out, size_t *outlen)
+{
+    uint8_t key[HDN_CRYPTO_KEY_LEN];
+    const uint8_t *salt, *iv, *tag, *ct;
+    size_t ct_len;
+    int pt_len = 0, final_len = 0;
+    EVP_CIPHER_CTX *ctx = NULL;
+    int rc = -1;
 
-    // Skip in debug builds
-    #ifdef _DEBUG
-        return 0;
-    #endif
+    if (bloblen < HDN_CRYPTO_OVERHEAD)
+        return -1;
 
-    // Thread-safe random number generation
-    pthread_mutex_lock(&skip_mutex);
+    salt = blob;
+    iv   = blob + HDN_CRYPTO_SALT_LEN;
+    tag  = blob + HDN_CRYPTO_SALT_LEN + HDN_CRYPTO_IV_LEN;
+    ct   = blob + HDN_CRYPTO_OVERHEAD;
+    ct_len = bloblen - HDN_CRYPTO_OVERHEAD;
 
-    if (!left) {
-        // Use better random number generation
-        #ifdef HAVE_ARC4RANDOM
-            left = arc4random_uniform(max);
-        #else
-            left = random() % max;
-        #endif
-        pthread_mutex_unlock(&skip_mutex);
-        return (left != 0);
+    if (!PKCS5_PBKDF2_HMAC(password, strlen(password),
+                            salt, HDN_CRYPTO_SALT_LEN,
+                            PBKDF2_ITER, EVP_sha256(),
+                            HDN_CRYPTO_KEY_LEN, key))
+        return -1;
+
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+        return -1;
+
+    if (!EVP_DecryptInit_ex(ctx, CRYPTO_ALGO, NULL, key, iv))
+        goto done;
+
+    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, HDN_CRYPTO_TAG_LEN,
+                             (void *)tag))
+        goto done;
+
+    if (*outlen < ct_len) {
+        rc = -1;
+        goto done;
     }
 
-    left--;
-    pthread_mutex_unlock(&skip_mutex);
-    return (left != 0);
+    if (!EVP_DecryptUpdate(ctx, out, &pt_len, ct, (int)ct_len))
+        goto done;
+
+    if (!EVP_DecryptFinal_ex(ctx, out + pt_len, &final_len))
+        goto done;
+    pt_len += final_len;
+
+    *outlen = (size_t)pt_len;
+    rc = 0;
+
+done:
+    EVP_CIPHER_CTX_free(ctx);
+    return rc;
 }
 
-
-uint8_t *hdn_crypto_hash(char *in) {
+/*
+ * SHA-256 of input_len bytes (binary safe).  Digest buffer is
+ * EVP_MAX_MD_SIZE; actual length is always 32 for SHA-256.
+ */
+uint8_t *hdn_crypto_hash(const char *input, size_t input_len)
+{
     uint8_t *digest;
     EVP_MD_CTX *ctx;
+    unsigned int digest_len;
 
-    if (!in)
+    if (!input)
         return NULL;
 
-    // Allocate memory for digest (EVP_MAX_MD_SIZE is the max possible size)
-    if (!(digest = malloc(EVP_MAX_MD_SIZE)))
+    digest = malloc(EVP_MAX_MD_SIZE);
+    if (!digest)
         return NULL;
 
-    // Create a new hash context (NOT cipher context!)
     ctx = EVP_MD_CTX_new();
     if (!ctx) {
         free(digest);
         return NULL;
     }
 
-
-    // Initialize the hash (use _ex for modern OpenSSL)
-    if (EVP_DigestInit_ex(ctx, HASH_ALGO, NULL) != 1) {
+    if (EVP_DigestInit_ex(ctx, HASH_ALGO, NULL) != 1 ||
+        EVP_DigestUpdate(ctx, input, input_len) != 1 ||
+        EVP_DigestFinal_ex(ctx, digest, &digest_len) != 1) {
         EVP_MD_CTX_free(ctx);
         free(digest);
         return NULL;
     }
 
-    // Update the hash with input data
-    if (EVP_DigestUpdate(ctx, in, strlen(in)) != 1) {
-        EVP_MD_CTX_free(ctx);
-        free(digest);
-        return NULL;
-    }
-
-    // Finalize the hash (get the actual length)
-    unsigned int digest_len;
-    if (EVP_DigestFinal_ex(ctx, digest, &digest_len) != 1) {
-        EVP_MD_CTX_free(ctx);
-        free(digest);
-        return NULL;
-    }
-
-    // Clean up
     EVP_MD_CTX_free(ctx);
-
-    // Return the digest (digest_len bytes are valid)
     return digest;
 }
 
-/**
- * Low-level encrypt function.
- *
- * @param password   Password defined by user.
- * @param plaintext  Message to be encrypted.
- * @param algorithm  Algorithm to use (e.g., "aes-256-gcm").
- * @param delimiter  Delimiter to separate components.
- * @param output     Output buffer for encrypted result.
- * @param output_len Maximum length of output buffer.
- * @return Length of encrypted output, or -1 on error.
+/*
+ * seed random() from the password so the (currently disabled)
+ * randomized instruction walk is reproducible per-passphrase.  The
+ * first 8 bytes of the SHA-256 digest, big-endian, become the seed.
  */
-static int hdn_encrypt(
-    const char *password,
-    const char *plaintext,
-    const char *algorithm,
-    const char *delimiter,
-    char *output,
-    int output_len) {
+void hdn_crypto_srandom(char *pass)
+{
+    uint64_t seed = 0;
+    uint8_t *digest = NULL;
+    unsigned int hash_length;
 
-    unsigned char salt[SALT_LENGTH];
-    unsigned char iv[IV_LENGTH];
-    unsigned char key[KEY_LENGTH_BYTES];
-    unsigned char ciphertext[1024];  // Adjust size as needed
-    unsigned char tag[GCM_TAG_LENGTH];
-    int ciphertext_len;
-    EVP_CIPHER_CTX *ctx;
-    int len;
-
-    // Generate random salt and IV
-    if (!RAND_bytes(salt, SALT_LENGTH) || !RAND_bytes(iv, IV_LENGTH)) {
-        return -1;
+    if (pass) {
+        digest = hdn_crypto_hash(pass, strlen(pass));
+        hash_length = EVP_MD_size(HASH_ALGO);
     }
 
-    // Derive key using PBKDF2
-    if (!PKCS5_PBKDF2_HMAC(
-            password,
-            strlen(password),
-            salt,
-            SALT_LENGTH,
-            ITERATIONS,
-            EVP_sha256(),
-            KEY_LENGTH_BYTES,
-            key)) {
-        return -1;
+    if (digest && hash_length >= sizeof(seed)) {
+        for (unsigned int i = 0; i < sizeof(seed); i++)
+            seed = (seed << 8) | digest[i];
+    } else {
+        seed = (uint64_t)time(NULL) ^ (uint64_t)getpid();
     }
 
-    // Encrypt
-    ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return -1;
-
-    if (!EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, key, iv)) {
-        EVP_CIPHER_CTX_free(ctx);
-        return -1;
-    }
-
-    if (!EVP_EncryptUpdate(ctx, ciphertext, &ciphertext_len,
-                          (unsigned char *)plaintext, strlen(plaintext))) {
-        EVP_CIPHER_CTX_free(ctx);
-        return -1;
-    }
-
-    int temp_len;
-    if (!EVP_EncryptFinal_ex(ctx, ciphertext + ciphertext_len, &temp_len)) {
-        EVP_CIPHER_CTX_free(ctx);
-        return -1;
-    }
-    ciphertext_len += temp_len;
-
-    // Get authentication tag
-    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, GCM_TAG_LENGTH, tag)) {
-        EVP_CIPHER_CTX_free(ctx);
-        return -1;
-    }
-
-    EVP_CIPHER_CTX_free(ctx);
-
-    // Append tag to ciphertext
-    memcpy(ciphertext + ciphertext_len, tag, GCM_TAG_LENGTH);
-    ciphertext_len += GCM_TAG_LENGTH;
-
-    // Encode to Base64 and combine
-    char salt_b64[256], iv_b64[256], ciphertext_b64[1024];
-    int salt_b64_len = base64_encode(salt, SALT_LENGTH, salt_b64);
-    int iv_b64_len = base64_encode(iv, IV_LENGTH, iv_b64);
-    int ciphertext_b64_len = base64_encode(ciphertext, ciphertext_len, ciphertext_b64);
-
-    // Combine with delimiter
-    int result_len = snprintf(output, output_len, "%s%s%s%s%s",
-                             salt_b64, delimiter, iv_b64, delimiter, ciphertext_b64);
-
-    return result_len > 0 ? result_len : -1;
-}
-
-/**
- * Low-level decrypt function.
- *
- * @param password      Password used to encrypt the original message.
- * @param encryptedData Encrypted message.
- * @param algorithm     The algorithm used to encrypt the message.
- * @param delimiter     Delimiter used to separate components.
- * @param output        Output buffer for decrypted result.
- * @param output_len    Maximum length of output buffer.
- * @return Length of decrypted output, or -1 on error.
- */
-static int hdn_decrypt(
-    const char *password,
-    const char *encryptedData,
-    const char *algorithm,
-    const char *delimiter,
-    char *output,
-    int output_len) {
-
-    unsigned char salt[SALT_LENGTH];
-    unsigned char iv[IV_LENGTH];
-    unsigned char ciphertext[1024];
-    unsigned char tag[GCM_TAG_LENGTH];
-    unsigned char key[KEY_LENGTH_BYTES];
-    unsigned char plaintext[1024];
-    int ciphertext_len, plaintext_len;
-    EVP_CIPHER_CTX *ctx;
-    int len;
-
-    // Parse encrypted data
-    char *data_copy = strdup(encryptedData);
-    if (!data_copy) return -1;
-
-    char *salt_b64 = strtok(data_copy, delimiter);
-    char *iv_b64 = strtok(NULL, delimiter);
-    char *ciphertext_b64 = strtok(NULL, delimiter);
-
-    if (!salt_b64 || !iv_b64 || !ciphertext_b64) {
-        free(data_copy);
-        return -1;
-    }
-
-    // Decode Base64
-    int salt_len = base64_decode(salt_b64, strlen(salt_b64), salt);
-    int iv_len = base64_decode(iv_b64, strlen(iv_b64), iv);
-    ciphertext_len = base64_decode(ciphertext_b64, strlen(ciphertext_b64), ciphertext);
-
-    free(data_copy);
-
-    // Extract tag from end of ciphertext
-    if (ciphertext_len < GCM_TAG_LENGTH) return -1;
-    ciphertext_len -= GCM_TAG_LENGTH;
-    memcpy(tag, ciphertext + ciphertext_len, GCM_TAG_LENGTH);
-
-    // Derive key using PBKDF2
-    if (!PKCS5_PBKDF2_HMAC(
-            password,
-            strlen(password),
-            salt,
-            salt_len,
-            ITERATIONS,
-            EVP_sha256(),
-            KEY_LENGTH_BYTES,
-            key)) {
-        return -1;
-    }
-
-    // Decrypt
-    ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return -1;
-
-    if (!EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, key, iv)) {
-        EVP_CIPHER_CTX_free(ctx);
-        return -1;
-    }
-
-    // Set authentication tag
-    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, GCM_TAG_LENGTH, tag)) {
-        EVP_CIPHER_CTX_free(ctx);
-        return -1;
-    }
-
-    if (!EVP_DecryptUpdate(ctx, plaintext, &plaintext_len, ciphertext, ciphertext_len)) {
-        EVP_CIPHER_CTX_free(ctx);
-        return -1;
-    }
-
-    int temp_len;
-    if (!EVP_DecryptFinal_ex(ctx, plaintext + plaintext_len, &temp_len)) {
-        EVP_CIPHER_CTX_free(ctx);
-        return -1;  // Authentication failed
-    }
-    plaintext_len += temp_len;
-
-    EVP_CIPHER_CTX_free(ctx);
-
-    // Copy result to output
-    if (plaintext_len >= output_len) return -1;
-    memcpy(output, plaintext, plaintext_len);
-    output[plaintext_len] = '\0';
-
-    return plaintext_len;
+    free(digest);
+    srandom((unsigned long)seed);
 }
 
 /*
- * High-level encrypt function for hdn_data_t
+ * encrypt the whole hdn_data_t in place: content becomes the binary
+ * blob, sz grows by HDN_CRYPTO_OVERHEAD.  Lengths come from data->sz,
+ * never strlen -- messages may contain NUL bytes.
  */
-int hdn_crypto_encrypt(hdn_data_t **data, char *password) {
-    char output[4096]; // buffer for encrypted data
+int hdn_crypto_encrypt(hdn_data_t **data, char *password)
+{
+    size_t ptlen, bloblen;
+    uint8_t *blob;
+    hdn_data_t *new_data;
 
-    int len = hdn_encrypt(password, (*data)->content, "aes-256-gcm", ":", output, sizeof(output));
-    if (len == -1) return -1;
+    if (!data || !*data || !password)
+        return -1;
 
-    // Reallocate data structure to fit new content
-    hdn_data_t *new_data = realloc(*data, sizeof(hdn_data_t) + len);
-    if (!new_data) return -1;
+    ptlen = (*data)->sz;
+    if (ptlen > HDN_CRYPTO_MAX_INPUT)
+        return -1;
+
+    bloblen = HDN_CRYPTO_OVERHEAD + ptlen + EVP_MAX_BLOCK_LENGTH;
+    blob = malloc(bloblen);
+    if (!blob)
+        return -1;
+
+    if (hdn_encrypt_raw((uint8_t *)(*data)->content, ptlen,
+                        password, blob, &bloblen) != 0) {
+        free(blob);
+        return -1;
+    }
+
+    new_data = realloc(*data, sizeof(hdn_data_t) + bloblen);
+    if (!new_data) {
+        free(blob);
+        return -1;
+    }
 
     *data = new_data;
-    (*data)->sz = len;
-    memcpy((*data)->content, output, len);
+    (*data)->sz = (uint32_t)bloblen;
+    memcpy((*data)->content, blob, bloblen);
 
+    free(blob);
     return 0;
 }
 
 /*
- * High-level decrypt function for hdn_data_t
+ * decrypt the whole hdn_data_t in place: verifies the GCM tag and
+ * replaces content with the plaintext (sz shrinks by the overhead).
+ * Returns -1 on any failure, leaving the caller's buffer freed.
  */
-int hdn_crypto_decrypt(hdn_data_t **data, char *password) {
-    char output[4096]; // buffer for decrypted data
+int hdn_crypto_decrypt(hdn_data_t **data, char *password)
+{
+    size_t bloblen, outlen;
+    uint8_t *pt;
+    hdn_data_t *new_data;
 
-    int len = hdn_decrypt(password, (*data)->content, "aes-256-gcm", ":", output, sizeof(output));
-    if (len == -1) return -1;
+    if (!data || !*data || !password)
+        return -1;
 
-    // Reallocate data structure to fit new content
-    hdn_data_t *new_data = realloc(*data, sizeof(hdn_data_t) + len);
-    if (!new_data) return -1;
+    bloblen = (*data)->sz;
+    if (bloblen < HDN_CRYPTO_OVERHEAD)
+        return -1;
+
+    outlen = bloblen - HDN_CRYPTO_OVERHEAD;
+    pt = malloc(outlen);
+    if (!pt)
+        return -1;
+
+    if (hdn_decrypt_raw((uint8_t *)(*data)->content, bloblen,
+                        password, pt, &outlen) != 0) {
+        free(pt);
+        return -1;
+    }
+
+    new_data = realloc(*data, sizeof(hdn_data_t) + outlen);
+    if (!new_data) {
+        free(pt);
+        return -1;
+    }
 
     *data = new_data;
-    (*data)->sz = len;
-    memcpy((*data)->content, output, len);
+    (*data)->sz = (uint32_t)outlen;
+    memcpy((*data)->content, pt, outlen);
 
+    free(pt);
     return 0;
 }

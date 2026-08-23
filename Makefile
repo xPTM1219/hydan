@@ -31,6 +31,8 @@ OBJS		= hdn_common.o hdn_embed.o\
 		  hdn_math.o hdn_exe.o    \
 		  $(PROG).o
 
+LIBOBJS		= $(filter-out $(PROG).o,$(OBJS))
+
 ###
 
 $(PROG): $(OBJS)
@@ -44,4 +46,36 @@ strip:
 	strip -s $(PROG)
 
 clean:
-	rm -f $(OBJS) *~ *.core \#* $(PROG) $(PROG)-decode $(PROG)-stats
+	rm -f $(OBJS) *~ *.core \#* $(PROG) $(PROG)-decode $(PROG)-stats \
+	      tests/*.o tests/test_crypto tests/test_subst \
+	      tests/test_embed_logic
+
+###
+#
+# Tests: standalone C tests + an integration script.  `make test`
+# builds and runs everything; no install or root needed.
+#
+
+TEST_BINS	= tests/test_crypto tests/test_subst tests/test_embed_logic
+
+test: $(PROG) lns $(TEST_BINS)
+	./tests/test_crypto
+	./tests/test_subst
+	./tests/test_embed_logic
+	./tests/test_integration.sh
+
+check: test
+
+tests/%.o: tests/%.c
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_crypto: tests/test_crypto.o $(LIBOBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+tests/test_subst: tests/test_subst.o $(LIBOBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+tests/test_embed_logic: tests/test_embed_logic.o $(LIBOBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+.PHONY: all dist lns strip clean test check

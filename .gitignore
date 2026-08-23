@@ -58,3 +58,8 @@ dkms.conf
 dist/
 libdisasm-64bit/
 .kilo/
+
+# Test build artifacts
+tests/test_crypto
+tests/test_subst
+tests/test_embed_logic

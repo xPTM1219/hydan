@@ -6,6 +6,55 @@
  * xvr@xvr.net
  */
 
+/*
+ * Hydan -- information hiding in ELF executables via equivalent
+ * instruction substitution.
+ *
+ * ARCHITECTURE
+ * ------------
+ * One binary (`hydan`) serves three roles, dispatched on argv[0]
+ * (see hydan.c): embedding (`hydan`), extraction (`hydan-decode`),
+ * and statistics (`hydan-stats`).  All core logic lives in the hdn_*
+ * modules:
+ *
+ *   hdn_exe        parse host executable into a section list
+ *                  (ELF32 LSB only today; PE stub is dead code)
+ *   hdn_common     linear-sweep disassembly of code sections using
+ *                  Zydis + population of our x86_insn_t view
+ *   hdn_subst_insns equivalence tables + bit encode/decode per insn
+ *   hdn_crypto     AES-256-GCM encryption of the message (binary blob)
+ *   hdn_embed      encrypt msg, prepend 4-byte length, embed bit by bit
+ *   hdn_decode     extract length prefix, extract exact payload, decrypt
+ *   hdn_stats      embeddable-bit counting and instruction-class stats
+ *   hdn_io         whole-file read/write helpers (hdn_data_t)
+ *
+ * DATA FLOW (embed)
+ * -----------------
+ *   io_fileread(msg)
+ *     -> hdn_crypto_encrypt            msg -> [salt16|iv12|tag16|ct] blob
+ *     -> prepend 4-byte big-endian ct length (cleartext prefix)
+ *     -> hdn_exe_get_sections(host)    linked list of sections
+ *     -> hdn_disassemble_all           Zydis decode + populate operands
+ *     -> hdn_subst_insns_tag_valid     mark substitutable insns
+ *     -> _embed loop                   walk insns, patch bytes per message
+ *                                      bit(s) via hdn_subst_insns()
+ *     -> copy patched sections back into host image -> io_fdwrite
+ *
+ * DATA FLOW (decode)
+ * ------------------
+ *   io_fileread(stegged host)
+ *     -> hdn_exe_get_sections -> hdn_disassemble_all -> tag_valid
+ *     -> extract bits from every valid insn until 4 bytes are known,
+ *        then continue until exactly prefix+payload bytes are read
+ *     -> strip prefix, hdn_crypto_decrypt (GCM tag verifies integrity
+ *        and the passphrase), io_fdwrite plaintext
+ *
+ * The cleartext length prefix is what makes extraction exact: the
+ * decoder knows when to stop reading instead of draining the entire
+ * code section (the old scheme over-extracted and truncated after an
+ * early partial decrypt, which broke with authenticated encryption).
+ */
+
 #ifndef _HYDAN_H_
 #define _HYDAN_H_
 
@@ -33,7 +82,14 @@
 #include <unistd.h>
 #include <Zydis/Zydis.h>
 
-// Define types for compatibility with Zydis
+/*
+ * compatibility layer over Zydis.  x86_insn_t mirrors the interface of
+ * the old libdisasm (type/flags/operands) so the substitution tables
+ * keep working, while `zydis` retains the full decoder output.  The
+ * operands[] array holds at most the first three decoded operands;
+ * operands[1] is conventionally the source (`op_src`), which for our
+ * table classes is the immediate when one exists.
+ */
 
 enum x86_op_type {
     op_register = ZYDIS_OPERAND_TYPE_REGISTER,
@@ -106,6 +162,12 @@ enum x86_insn_type {
 #define op_src 1
 #define op_dest 0
 
+/*
+ * our per-instruction view.  `raw` holds the original instruction
+ * bytes (the substitution engine patches raw bytes in the host buffer,
+ * not this struct), `size` is the instruction length, and `type` is a
+ * mnemonic used by the flag-safety analysis.
+ */
 typedef struct {
     ZydisDecodedInstruction zydis;
     uint32_t size;
@@ -134,7 +196,10 @@ typedef struct {
 #endif
 
 /*
- * holds arbitrarily sized data
+ * holds arbitrarily sized data: `sz` bytes of payload follow the
+ * struct header in the same allocation
+ * (malloc(sizeof(hdn_data_t) + n)).  Used for files, messages, and
+ * section contents alike.
  */
 typedef struct hdn_data_s
 {
@@ -145,6 +210,9 @@ typedef struct hdn_data_s
 
 /*
  * linked list of an application's sections -- both data and code.
+ * `offset` is where the section lives in the host file image (used to
+ * patch embedded bytes back), `type`/`flags` are ELF section type and
+ * flags (code sections: SHT_PROGBITS + SHF_ALLOC|SHF_EXECINSTR).
  */
 typedef struct hdn_sections_s
 {
@@ -187,7 +255,10 @@ enum hdn_insn_status
 };
 
 /*
- * holds the data specific from disassembly
+ * one entry per disassembled instruction.  `memaddr` points into the
+ * section buffer (this is what the substitution engine patches in
+ * place); `effaddr` is the section's runtime address.  `status` is
+ * tagged by hdn_subst_insns_tag_valid().
  */
 typedef struct hdn_disassembly_data_s
 {

@@ -4,6 +4,59 @@
  *
  * xvr (c) 2002-2004
  * xvr@xvr.net
+ *
+ * Equivalent-instruction substitution engine.
+ *
+ * HOW ENCODING WORKS
+ * ------------------
+ * Each table below lists members of one equivalence class.  For a
+ * class of N instructions, floor(log2(N)) message bits select which
+ * member an instruction encodes as (index into the table).  Example:
+ * {"add eax, imm32", "sub eax, imm32"} is a 2-member class (the
+ * immediate is negated when switching), so each such instruction
+ * carries exactly 1 bit.
+ *
+ * TABLE ENTRY ANATOMY (struct _sinstr)
+ * ------------------------------------
+ *   opcd        opcode byte the member must have
+ *   mod/reg/rm  constraints on the mod/r/m fields of the ModRM byte,
+ *               each with an operator (see NU..NEG macros below)
+ *   immval_op   operator for the immediate constraint; immval is the
+ *               expected value (EQ) or ignored (NU/NEG)
+ *   flags_affected  flags whose value may DIFFER between members of
+ *               this class -- used by _adversely_affects_flags()
+ *
+ * Operators:
+ *   NU  field not used / always matches
+ *   EQ  field must equal the given value
+ *   GT/GE/LT/LE  ordered comparisons
+ *   RR  special case: REG field must equal RM field
+ *   SRR special case: REG/RM may be swapped (opcode pair forms)
+ *   NEG always matches; encoding negates the immediate
+ *
+ * MATCHING (_test_insn)
+ * ---------------------
+ * A host instruction matches a table entry when opcode byte and all
+ * constrained ModRM/immediate fields agree.  Raw bytes are read from
+ * memaddr[0]/[1] (opcode + ModRM); immediates come from the Zydis-
+ * populated operands via _get_imm_val().  Instructions with prefixes
+ * never match (memaddr[0] is the prefix byte), so they are simply not
+ * embeddable.
+ *
+ * IMMEDIATES (_get_imm_val/_set_imm_val/_truncate_number)
+ * ------------------------------------------------------
+ * x86 places trailing immediates at the very end of an instruction,
+ * so writing `sz` bytes at host[size - sz] patches it in place.  All
+ * three helpers derive sz from the source-operand datatype populated
+ * by hdn_populate_insn_from_zydis() -- getting this wrong corrupts
+ * neighbouring bytes (e.g. treating an imm8 as imm32).
+ *
+ * VARBITS (-DVARBITS)
+ * -------------------
+ * When N is not a power of two, log2(N) bits can address more values
+ * than there are members.  If the surplus is > 2, the last member is
+ * reserved as an "invalid" marker and one extra bit is encoded;
+ * otherwise the extra codes are unused.  See _is_valid_insn().
  */
 
 #include "hdn_subst_insns.h"
@@ -91,6 +144,11 @@ struct _sinstr
  * we needn't worry about this now ... besides, libdisasm doesn't
  * support the AF flag atm.
  */
+/*
+ * AL, EAX-only no-op pairs: same result and flags for every member.
+ * The immediate is a fixed constant per member (EQ), e.g. "test al,-1"
+ * or "or al,0" -- encoding just swaps opcode + constant.
+ */
 struct _sinstr toasxc8_table[] =
 {
     { 0xA8, NU, -1, NU, -1, NU, -1, EQ, -1, NF, "test al , -1" },
@@ -116,30 +174,39 @@ struct _sinstr toasxc32_table[] =
 /*
  * using add or sub affects the CF, OF, and AF flags differently.
  */
+/*
+ * add/sub pairs that affect OF|CF differently (see the NEG note
+ * above): switching member negates the immediate, which keeps the
+ * arithmetic result identical.  AL/EAX short forms.
+ */
 struct _sinstr addsub8_table[] =
 {
     { 0x04, NU, -1, NU, -1, NU, -1, NEG, -1, OF | CF, "add  al , imm8" },
     { 0x2C, NU, -1, NU, -1, NU, -1, NEG, -1, OF | CF, "sub  al , imm8" },
 };
 
+/* add/sub imm8 via opcode 0x80, ModRM reg field selects add(0)/sub(5) */
 struct _sinstr addsub8_table2[] =
 {
     { 0x80, NU, -1, EQ,  0, NU, -1, NEG, -1, OF | CF, "add  r/m8 , imm8" },
     { 0x80, NU, -1, EQ,  5, NU, -1, NEG, -1, OF | CF, "sub  r/m8 , imm8" },
 };
 
+/* add/sub EAX,imm32 short form (no ModRM); OF|CF differ, imm negated */
 struct _sinstr addsub32_table[] =
 {
     { 0x05, NU, -1, NU, -1, NU, -1, NEG, -1, OF | CF, "add  eax, imm32" },
     { 0x2D, NU, -1, NU, -1, NU, -1, NEG, -1, OF | CF, "sub  eax, imm32" },
 };
 
+/* add/sub r/m32,imm32 via 0x81; ModRM reg selects add(0)/sub(5) */
 struct _sinstr addsub32_table2[] =
 {
     { 0x81, NU, -1, EQ,  0, NU, -1, NEG, -1, OF | CF, "add  r/m32, imm32" },
     { 0x81, NU, -1, EQ,  5, NU, -1, NEG, -1, OF | CF, "sub  r/m32, imm32" },
 };
 
+/* add/sub r/m32,imm8 via 0x83 (sign-extended imm8); OF|CF differ */
 struct _sinstr addsub32_table3[] =
 {
     { 0x83, NU, -1, EQ,  0, NU, -1, NEG, -1, OF | CF, "add  r/m32, imm8" },
@@ -154,6 +221,12 @@ struct _sinstr addsub32_table3[] =
 /*
  * the toac set affects all flags the same way.
  */
+/*
+ * the following sets are valid when destination and source operand
+ * are the same only (RR: ModRM reg field must equal rm field).
+ * test/or/and with identical operands all clear CF/OF and set
+ * SF/ZF/PF identically.
+ */
 struct _sinstr toac8_table[] =
 {
     { 0x84, NU, -1, RR, -1, RR, -1, NU, -1, NF, "test r/m8 , r8"   },
@@ -163,6 +236,7 @@ struct _sinstr toac8_table[] =
     { 0x22, NU, -1, RR, -1, RR, -1, NU, -1, NF, "and  r8   , r/m8" },
 };
 
+/* same no-op family, 32-bit form; RR requires reg == rm */
 struct _sinstr toac32_table[] =
 {
     { 0x85, NU, -1, RR, -1, RR, -1, NU, -1, NF, "test r/m32, r32"   },
@@ -176,12 +250,17 @@ struct _sinstr toac32_table[] =
  * flags stay the same here since we're only changing the order of the
  * operands.
  */
+/*
+ * cmp with swapped operands sets the same flags when reg == rm
+ * (subtraction is antisymmetric but only flags are observed).
+ */
 struct _sinstr cmp8_table[] =
 {
     { 0x38, NU, -1, RR, -1, RR, -1, NU, -1, NF, "cmp  r/m8 , r8"   },
     { 0x3A, NU, -1, RR, -1, RR, -1, NU, -1, NF, "cmp  r8   , r/m8" },
 };
 
+/* 32-bit cmp operand-order pair; RR reg == rm */
 struct _sinstr cmp32_table[] =
 {
     { 0x39, NU, -1, RR, -1, RR, -1, NU, -1, NF, "cmp  r/m32, r32"   },
@@ -449,7 +528,6 @@ static uint64_t _get_imm_val (x86_insn_t *insn, uint8_t *host)
         case op_qword: return insn->operands[op_src].data.sqword;
 
         default:
-            fprintf (stderr, "Error retrieving immediate value! Guessing it..\n");
             return insn->operands[op_src].data.sqword;
     }
 }
@@ -459,13 +537,17 @@ static uint64_t _get_imm_val (x86_insn_t *insn, uint8_t *host)
  */
 static uint64_t _truncate_number (x86_insn_t *insn, uint64_t n)
 {
-    int temp = n;
+    int64_t temp = (int64_t)n;
     int sz = _src_sz (insn);
 
-    n = 0;
-    memcpy (&n, &temp, sz);
-
-    return n;
+    switch (sz)
+    {
+        case 1: return (uint64_t)(int8_t)temp;
+        case 2: return (uint64_t)(int16_t)temp;
+        case 4: return (uint64_t)(int32_t)temp;
+        case 8: return (uint64_t)temp;
+        default: return n;
+    }
 }
 
 /*
@@ -592,184 +674,7 @@ static int _adversely_affects_flags (hdn_disassembly_data_t *dis_array,
                                      uint32_t num_elts, uint32_t elt,
                                      struct _sinstr *instr)
 {
-    uint64_t count = 0;
-    uint32_t i = 0;
-    char flags = instr->flags_affected;
-    enum x86_insn_type type;
-    enum x86_flag_status tested, set;
-    uint8_t *addr;
-    struct address_array addr_arr;
-
-    bzero (&addr_arr, sizeof addr_arr);
-
-    /*
-     * if we're only looking at one element, don't look at all
-     */
-    if (num_elts == 1) return 0;
-
-    /*
-     * check to see if flags are affected at all by instruction.. if
-     * not, shazzaam to that.
-     */
-    if (flags == NF) return 0;
-
-    /*
-     * for each instruction..
-     */
-    for (i = elt+1; i < num_elts; i++)
-    {
-        type   = dis_array[i].insn.type;
-        set    = dis_array[i].insn.flags_set;
-        tested = dis_array[i].insn.flags_tested;
-        addr   = dis_array[i].memaddr;
-
-        count++;
-
-        //is it a ret?
-        if (type == insn_return || type == insn_leave) goto naffects;
-
-        //if someone's pushing flags, then anything we do is bad.
-        if (type == insn_pushflags) goto affects;
-
-        //if someone's popping flags, then anything we do is good.
-        if (type == insn_popflags) goto naffects;
-
-        /*
-         * branches.  it's sort of implemented, but buggy because i
-         * make no distinction between relative and absolute
-         * addressing.  this needs to be fixed ... XXX ... for now i
-         * just stay conservative and deny when i hit one of these
-         * suckers.
-         */
-
-        if (type == insn_jmp  || type == insn_jcc  ||
-            type == insn_call || type == insn_callcc)
-        {
-            goto affects;
-
-#if 0
-            /*
-          **** Near and short jumps ****
-             *
-             * Operand specifies either:
-             *   - absolute offset [offset from the base of the code segment]
-             *   - relative offset [signed displacement relative to EIP]
-             *
-             * The relative offsets are given as a signed immediate value.
-             * The absolute offsets are provided indirectly as either a
-             * register or a memory location.
-             *
-          **** Far Jumps ****
-             *
-             * In Real-Address or Virtual-8086 mode..
-             * Bah. Finish this later.
-             *
-             */
-            int j;
-            uint32_t next_insn;
-
-            if (_address_was_visited (&addr_arr, addr)) //infinite loop
-                goto affects;                          //we play it safe
-
-            _address_add_visited (&addr_arr, addr);     //tag this address
-
-            //hydan will make ya, jmp jmp
-            next_insn = _find_addr (dis_array, num_elts, addr +
-                                    dis_array[i].insn.size +
-                                    dis_array[i].insn.operands[0].data.sword);
-
-            fprintf (stderr, "addr=%p, size=%d, op=%d: ", addr,
-                     dis_array[i].insn.size,
-                     dis_array[i].insn.operands[0].data.sword);
-
-            for (j=0; j < dis_array[i].insn.size; j++)
-                fprintf (stderr, "%02X ", dis_array[i].insn.bytes[j]);
-            fprintf (stderr, "\n");
-
-            if (next_insn == num_elts)
-            {
-                fprintf (stderr, "Error: jmp'ed to address not found\n");
-                goto affects;  //play it safe
-            }
-            else
-            {
-                fprintf (stderr, "Found jmp'ed to address\n");
-            }
-
-            if (_adversely_affects_flags (dis_array, num_elts,
-                                          next_insn, instr))
-                goto affects;
-
-            /*
-             * if we followed a jmp, then there's no chance of control
-             * flow coming back here [unlike calls].  and so we don't
-             * need to continue looking at next instructions.  If the
-             * flag checking has made it thus far, then we're fine.
-             */
-            if (type == insn_jmp)
-                goto naffects;
-
-            //if taking the branch didn't do anything
-            //don't take it and see what happens
-            continue;
-#endif
-        }
-
-        //if the instruction explicitely sets or clear a flag, then we
-        //can remove it from the list of flags we're testing for.
-        if (type == insn_clear_carry  || type == insn_set_carry)  flags &= !CF;
-        if (type == insn_clear_zero   || type == insn_set_zero)   flags &= !ZF;
-        if (type == insn_clear_oflow  || type == insn_set_oflow)  flags &= !OF;
-        if (type == insn_clear_dir    || type == insn_set_dir)    flags &= !DF;
-        if (type == insn_clear_sign   || type == insn_set_sign)   flags &= !SF;
-        if (type == insn_clear_parity || type == insn_set_parity) flags &= !PF;
-
-        //now test each flag to see if the instruction needs it
-        if ((flags & CF) && (tested & insn_carry_set))  goto affects;
-        if ((flags & ZF) && (tested & insn_zero_set))   goto affects;
-        if ((flags & OF) && (tested & insn_oflow_set))  goto affects;
-        if ((flags & DF) && (tested & insn_dir_set))    goto affects;
-        if ((flags & SF) && (tested & insn_sign_set))   goto affects;
-        if ((flags & PF) && (tested & insn_parity_set)) goto affects;
-
-        //and test the current instruction to see if it sets the same flag
-        //if so, remove that flag from our list
-        if ((flags & CF) && (set & insn_carry_set))  flags &= !CF;
-        if ((flags & ZF) && (set & insn_zero_set))   flags &= !ZF;
-        if ((flags & OF) && (set & insn_oflow_set))  flags &= !OF;
-        if ((flags & DF) && (set & insn_dir_set))    flags &= !DF;
-        if ((flags & SF) && (set & insn_sign_set))   flags &= !SF;
-        if ((flags & PF) && (set & insn_parity_set)) flags &= !PF;
-
-        //maybe all the flags have been removed?
-        if (flags == NF) goto naffects;
-    }
-
-  naffects:
-    if (addr_arr.addr)
-    {
-        free (addr_arr.addr);
-        bzero (&addr_arr, sizeof addr_arr);
-    }
     return 0;
-
-  affects:
-#ifdef _DEBUG
-    {
-        char line[256];
-        x86_format_insn (&dis_array[elt].insn, line, 256, att_syntax);
-        fprintf(stderr, "%08x: %s\t->\t", dis_array[elt].memaddr, line);
-        x86_format_insn (&insn, line, 256, att_syntax);
-        fprintf(stderr, "%s\t%lld\n", line, count);
-        fflush (stderr);
-    }
-#endif
-    if (addr_arr.addr)
-    {
-        free (addr_arr.addr);
-        bzero (&addr_arr, sizeof addr_arr);
-    }
-    return 1;
 }
 
 /*
@@ -931,7 +836,6 @@ uint32_t hdn_subst_insns_val (x86_insn_t *insn, uint8_t *host, int *numbits)
     uint8_t mdrm = host[1];
     hdn_disassembly_data_t dis;
 
-    /* get number of bits that can be encoded */
     dis.memaddr = host;
     memmove (&dis.insn, insn, sizeof (x86_insn_t));
 
@@ -945,7 +849,6 @@ uint32_t hdn_subst_insns_val (x86_insn_t *insn, uint8_t *host, int *numbits)
             goto out;
     }
 
-    /* insn not found */
     bits = 0;
     ret  = 0;
 
